@@ -1,5 +1,5 @@
-#ifndef ALIMAGE_TRANSCRIBER_H
-#define ALIMAGE_TRANSCRIBER_H
+#ifndef MMAPIMAGE_TRANSCRIBER_H
+#define MMAPIMAGE_TRANSCRIBER_H
 
 #include "almemoryproxy.h"
 #include "albroker.h"
@@ -8,6 +8,14 @@
 
 #include "ThreadedImageTranscriber.h"
 #include "synchro.h"
+#include <linux/videodev2.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <errno.h>
 
 class ALImageTranscriber : public ThreadedImageTranscriber {
  public:
@@ -36,8 +44,8 @@ class ALImageTranscriber : public ThreadedImageTranscriber {
  private: // member variables
     // Interfaces/Proxies to robot
 
+    int fd;
     AL::ALPtr<AL::ALLoggerProxy> log;
-    AL::ALPtr<AL::ALProxy> camera;
 
     std::string lem_name;
 

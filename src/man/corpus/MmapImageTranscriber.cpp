@@ -6,7 +6,6 @@
 
 #include "ALImageTranscriber.h"
 #include "corpusconfig.h"
-#include "CameraConstants.h"
 
 #ifdef DEBUG_ALIMAGE
 #  define DEBUG_ALIMAGE_LOOP
@@ -14,6 +13,7 @@
 
 using boost::shared_ptr;
 using namespace AL;
+#define USE_MMAP
 
 ALImageTranscriber::ALImageTranscriber(shared_ptr<Synchro> synchro,
                                        shared_ptr<Sensors> s,
@@ -124,6 +124,34 @@ void ALImageTranscriber::stop() {
 }
 
 bool ALImageTranscriber::registerCamera(ALPtr<ALBroker> broker) {
+#ifdef USE_MMAP
+    fd = open ("/dev/video0", O_RDWR);
+    if (fd < 0){
+        std::cout << "Failed to open the camera" << std::endl;
+        return false;
+    }
+    v4l2_std_id std_id;
+    struct v4l2_standard standard;
+
+    if (-1 == ioctl (fd, VIDIOC_G_STD, &std_id)) {
+        /* Note when VIDIOC_ENUMSTD always returns EINVAL this
+           is no video device or it falls under the USB exception,
+           and VIDIOC_G_STD returning EINVAL is no error. */
+
+        perror ("VIDIOC_G_STD");
+    }
+
+    memset (&standard, 0, sizeof (standard));
+    standard.index = 0;
+
+    while (0 == ioctl (fd, VIDIOC_ENUMSTD, &standard)) {
+        if (standard.id & std_id) {
+            printf ("Current video standard: %s\n", standard.name);
+        }
+
+        standard.index++;
+    }
+#endif
 
     try {
         camera = broker->getProxy("ALVideoDevice");
@@ -167,6 +195,39 @@ bool ALImageTranscriber::registerCamera(ALPtr<ALBroker> broker) {
 }
 
 void ALImageTranscriber::initCameraSettings(int whichCam){
+#ifdef USE_MMAP
+    struct v4l2_cropcap cropcap;
+    struct v4l2_crop crop;
+
+    memset (&cropcap, 0, sizeof (cropcap));
+    cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    if (-1 == ioctl (fd, VIDIOC_CROPCAP, &cropcap)) {
+        std::cout << "1" << std::endl;
+        perror ("VIDIOC_CROPCAP");
+    }
+
+    memset (&crop, 0, sizeof (crop));
+
+    crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    crop.c = cropcap.defrect;
+
+    /* Scale the width and height to 50 % of their original size
+       and center the output. */
+
+    crop.c.width = NAO_IMAGE_WIDTH;
+    crop.c.height = NAO_IMAGE_HEIGHT;
+    crop.c.left = 0;
+    crop.c.top = 0;
+
+    /* Ignore if cropping is not supported (EINVAL). */
+
+    if (-1 == ioctl (fd, VIDIOC_S_CROP, &crop)
+        && errno != EINVAL) {
+        perror ("VIDIOC_S_CROP");
+    }
+    testV4L2SetValues();
+#endif
 
     int currentCam =  camera->call<int>( "getParam", kCameraSelectID );
     if (whichCam != currentCam){
@@ -501,4 +562,58 @@ void ALImageTranscriber::releaseImage(){
                         "could not call the releaseImage method of the NaoCam module" );
         }
 #endif
+}
+
+void ALImageTranscriber::testV4L2SetValues(){
+    struct v4l2_cropcap cropcap;
+    struct v4l2_crop crop;
+    struct v4l2_format format;
+    double hscale, vscale;
+    double aspect;
+    int dwidth, dheight;
+
+    memset (&cropcap, 0, sizeof (cropcap));
+    cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    if (-1 == ioctl (fd, VIDIOC_CROPCAP, &cropcap)) {
+        std::cout << "2" << std::endl;
+        perror ("VIDIOC_CROPCAP");
+    }
+
+    memset (&crop, 0, sizeof (crop));
+    crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    if (-1 == ioctl (fd, VIDIOC_G_CROP, &crop)) {
+        if (errno != EINVAL) {
+            perror ("VIDIOC_G_CROP");
+        }
+
+        /* Cropping not supported. */
+        crop.c = cropcap.defrect;
+    }
+
+    memset (&format, 0, sizeof (format));
+    format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    if (-1 == ioctl (fd, VIDIOC_G_FMT, &format)) {
+        perror ("VIDIOC_G_FMT");
+    }
+
+    /* The scaling applied by the driver. */
+
+    hscale = format.fmt.pix.width / (double) crop.c.width;
+    vscale = format.fmt.pix.height / (double) crop.c.height;
+
+    aspect = cropcap.pixelaspect.numerator /
+        (double) cropcap.pixelaspect.denominator;
+    aspect = aspect * hscale / vscale;
+
+    /* Devices following ITU-R BT.601 do not capture
+       square pixels. For playback on a computer monitor
+       we should scale the images to this size. */
+
+    dwidth = format.fmt.pix.width / aspect;
+    dheight = format.fmt.pix.height;
+    std::cout << "dwidth: " << dwidth << std::endl;
+    std::cout << "dheight " << dheight<< std::endl;
 }
