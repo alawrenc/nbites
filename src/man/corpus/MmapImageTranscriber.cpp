@@ -4,8 +4,9 @@
 
 #include "manconfig.h"
 
-#include "ALImageTranscriber.h"
+#include "MmapImageTranscriber.h"
 #include "corpusconfig.h"
+#include "CameraConstants.h"
 
 #ifdef DEBUG_ALIMAGE
 #  define DEBUG_ALIMAGE_LOOP
@@ -15,11 +16,21 @@ using boost::shared_ptr;
 using namespace AL;
 #define USE_MMAP
 
-ALImageTranscriber::ALImageTranscriber(shared_ptr<Synchro> synchro,
-                                       shared_ptr<Sensors> s,
-                                       ALPtr<ALBroker> broker)
-    : ThreadedImageTranscriber(s,synchro,"ALImageTranscriber"),
-      log(), camera(), lem_name(""), camera_active(false),
+int MmapImageTranscriber::xioctl (int fd, int request, void * arg)
+{
+    int r;
+
+    do r = ioctl (fd, request, arg);
+    while (-1 == r && EINTR == errno);
+
+    return r;
+}
+
+MmapImageTranscriber::MmapImageTranscriber(shared_ptr<Synchro> synchro,
+                                           shared_ptr<Sensors> s,
+                                           ALPtr<ALBroker> broker)
+    : ThreadedImageTranscriber(s,synchro,"MmapImageTranscriber"),
+      log(), camera_active(false),
       image(new unsigned char[IMAGE_BYTE_SIZE])
 {
     try {
@@ -32,33 +43,64 @@ ALImageTranscriber::ALImageTranscriber(shared_ptr<Synchro> synchro,
     }
 
 #ifdef USE_VISION
-    camera_active = registerCamera(broker);
-    if(camera_active) {
-        try{
-            initCameraSettings(BOTTOM_CAMERA);
-        }catch(ALError &e){
-            std::cout << "Failed to init the camera settings:"<<e.toString()<<std::endl;
-            camera_active = false;
-        }
+    if (registerCamera()){
+        camera_active = true;
+        initializeBuffers();
+        initCameraSettings();
     }
-    else
+    else {
+        camera_active = false;
         std::cout << "\tCamera is inactive!" << std::endl;
+    }
 #endif
 }
 
-ALImageTranscriber::~ALImageTranscriber() {
-    delete [] image;
+MmapImageTranscriber::~MmapImageTranscriber() {
     stop();
+    //delete[] buffers;
 }
 
-
-int ALImageTranscriber::start() {
+int MmapImageTranscriber::start() {
     return Thread::start();
 }
 
-void ALImageTranscriber::run() {
+void MmapImageTranscriber::start_streaming() {
+
+    // enqueue buffers to be filled
+    v4l2_buffer buffer;
+    for (unsigned int i = 0; i < REQUIRED_BUFFERS; i++){
+        memset(&buffer, 0, sizeof(buffer));
+        buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buffer.memory = V4L2_MEMORY_MMAP;
+        buffer.index = i;
+
+        if ( 0 > xioctl(sd, VIDIOC_QBUF, &buffer)){
+            log->error("MmapImageTranscriber", "problem queueing buffer");
+        }
+    }
+
+    memset(&current_frame, 0, sizeof(current_frame));
+    current_frame.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    current_frame.memory = V4L2_MEMORY_MMAP;
+    //current_frame.index = buffer.index;
+
+    memset(&last_frame, 0, sizeof(last_frame));
+    last_frame.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    last_frame.memory = V4L2_MEMORY_MMAP;
+    //last_frame.index = buffer.index - 1;
+
+    v4l2_buf_type type;
+    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (0 > xioctl(sd,VIDIOC_STREAMON, &type)){
+        log->error("MmapImageTranscriber", "video streaming failed to start");
+    }
+}
+
+void MmapImageTranscriber::run() {
     Thread::running = true;
     Thread::trigger->on();
+
+    start_streaming();
 
     long long lastProcessTimeAvg = VISION_FRAME_LENGTH_uS;
 
@@ -67,8 +109,37 @@ void ALImageTranscriber::run() {
         //start timer
         const long long startTime = micro_time();
 
-        if (camera_active)
+        if (camera_active){
+            fd_set fds;
+            struct timeval tv;
+            int r;
+            FD_ZERO (&fds);
+            FD_SET (sd, &fds);
+
+            /* Timeout. */
+            tv.tv_sec = 5;
+            tv.tv_usec = 0;
+            // if (-1 == xioctl (sd, VIDIOC_QUERYBUF, &current_frame)) {
+            //     perror ("VIDIOC_QUERYBUF");
+            //     exit (EXIT_FAILURE);
+            // }
+
+            // std::cout << " mapped: " << current_frame.flags << std::endl;
+
+            // r = select (sd + 1, &fds, NULL, NULL, &tv);
+
+            // if (-1 == r) {
+            //     if (EINTR == errno){
+            //         log->error("MmapImageTranscriber", "select");
+            //     }
+            // }
+
+            // if (0 == r) {
+            //     log->error("MmapImageTranscriber","select timeout");
+            // }
             waitForImage();
+        }
+
         subscriber->notifyNextVisionImage();
 
         //stop timer
@@ -79,10 +150,10 @@ void ALImageTranscriber::run() {
 
         if (processTime > VISION_FRAME_LENGTH_uS) {
             if (processTime > VISION_FRAME_LENGTH_PRINT_THRESH_uS) {
-#ifdef DEBUG_ALIMAGE_LOOP
-                std::cout << "Time spent in ALImageTranscriber loop longer than"
+                //#ifdef DEBUG_ALIMAGE_LOOP
+                std::cout << "Time spent in MmapImageTranscriber loop longer than"
                           << " frame length: " << processTime <<std::endl;
-#endif
+                //#endif
             }
             //Don't sleep at all
         } else{
@@ -99,521 +170,196 @@ void ALImageTranscriber::run() {
             interval.tv_sec = secSleepTime;
             interval.tv_nsec = nanoSleepTime;
 
-            nanosleep(&interval, &remainder);
+            //nanosleep(&interval, &remainder);
         }
     }
     Thread::trigger->off();
 }
 
-void ALImageTranscriber::stop() {
-    std::cout << "Stopping ALImageTranscriber" << std::endl;
+void MmapImageTranscriber::stop() {
+    std::cout << "Stopping MmapImageTranscriber" << std::endl;
     running = false;
 #ifdef USE_VISION
     if(camera_active){
-        std::cout << "lem_name = " << lem_name << std::endl;
-        try {
-            camera->callVoid("unregister", lem_name);
-        }catch (ALError &e) {
-            log->error("Man", "Could not call the unregister method of the NaoCam "
-                       "module");
-        }
+        stop_streaming();
+        close(sd);
+        sd = -1;
     }
+    for (unsigned int i = 0; i < REQUIRED_BUFFERS; i++){
+        munmap (buffers[i].start, buffers[i].length);
+    }
+
 #endif
 
     Thread::stop();
 }
 
-bool ALImageTranscriber::registerCamera(ALPtr<ALBroker> broker) {
-#ifdef USE_MMAP
-    fd = open ("/dev/video0", O_RDWR);
-    if (fd < 0){
-        std::cout << "Failed to open the camera" << std::endl;
-        return false;
+void MmapImageTranscriber::stop_streaming() {
+    v4l2_buf_type type;
+    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (0 > xioctl(sd,VIDIOC_STREAMOFF, &type)){
+        log->error("MmapImageTranscriber", "video streaming failed to stop");
     }
-    v4l2_std_id std_id;
-    struct v4l2_standard standard;
+}
 
-    if (-1 == ioctl (fd, VIDIOC_G_STD, &std_id)) {
-        /* Note when VIDIOC_ENUMSTD always returns EINVAL this
-           is no video device or it falls under the USB exception,
-           and VIDIOC_G_STD returning EINVAL is no error. */
-
-        perror ("VIDIOC_G_STD");
-    }
-
-    memset (&standard, 0, sizeof (standard));
-    standard.index = 0;
-
-    while (0 == ioctl (fd, VIDIOC_ENUMSTD, &standard)) {
-        if (standard.id & std_id) {
-            printf ("Current video standard: %s\n", standard.name);
-        }
-
-        standard.index++;
-    }
-#endif
-
-    try {
-        camera = broker->getProxy("ALVideoDevice");
-    }catch (ALError &e) {
-        log->error("ALImageTranscriber",
-                   "Could not create a proxy to NaoCam module");
+bool MmapImageTranscriber::registerCamera() {
+    sd = open ("/dev/video0", O_RDWR | O_NONBLOCK, 0);
+    if (0 > sd){
+        log->error("MmapImageTranscriber",
+                   "Could not attach to video device");
         return false;
     }
 
-    lem_name = "ALImageTranscriber_LEM";
-    int format = NAO_IMAGE_SIZE;
-    int colorSpace = NAO_COLOR_SPACE;
-    int fps = DEFAULT_CAMERA_FRAMERATE;
-
-#ifdef DEBUG_MAN_INITIALIZATION
-    printf("  Registering LEM with format=%i colorSpace=%i fps=%i\n", format,
-           colorSpace, fps);
-#endif
-
-    try {
-        lem_name = camera->call<std::string>("subscribe", lem_name, format,
-                                             colorSpace, fps);
-        std::cout << "Registered Camera: " << lem_name << " successfully"<<std::endl;
-    } catch (ALError &e) {
-        std::cout << "Failed to register camera" << lem_name << std::endl;
-        return false;
-        //         SleepMs(500);
-
-        //         try {
-        //             printf("LEM failed once, trying again\n");
-        //             lem_name = camera->call<std::string>("register", lem_name, format,
-        //                                                  colorSpace, fps);
-        //         }catch (ALError &e2) {
-        //             log->error("ALImageTranscriber", "Could not call the register method of the NaoCam "
-        //                        "module\n" + e2.toString());
-        //             return;
-        //         }
-    }
     return true;
-
 }
 
-void ALImageTranscriber::initCameraSettings(int whichCam){
-#ifdef USE_MMAP
-    struct v4l2_cropcap cropcap;
-    struct v4l2_crop crop;
+void MmapImageTranscriber::initializeBuffers(){
 
-    memset (&cropcap, 0, sizeof (cropcap));
-    cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    // setup memory map
+    v4l2_requestbuffers reqbuf;
+    memset (&reqbuf, 0, sizeof (reqbuf));
+    reqbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    reqbuf.memory = V4L2_MEMORY_MMAP;
+    reqbuf.count = REQUIRED_BUFFERS;
 
-    if (-1 == ioctl (fd, VIDIOC_CROPCAP, &cropcap)) {
-        std::cout << "1" << std::endl;
-        perror ("VIDIOC_CROPCAP");
-    }
-
-    memset (&crop, 0, sizeof (crop));
-
-    crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    crop.c = cropcap.defrect;
-
-    /* Scale the width and height to 50 % of their original size
-       and center the output. */
-
-    crop.c.width = NAO_IMAGE_WIDTH;
-    crop.c.height = NAO_IMAGE_HEIGHT;
-    crop.c.left = 0;
-    crop.c.top = 0;
-
-    /* Ignore if cropping is not supported (EINVAL). */
-
-    if (-1 == ioctl (fd, VIDIOC_S_CROP, &crop)
-        && errno != EINVAL) {
-        perror ("VIDIOC_S_CROP");
-    }
-    testV4L2SetValues();
-#endif
-
-    int currentCam =  camera->call<int>( "getParam", kCameraSelectID );
-    if (whichCam != currentCam){
-        camera->callVoid( "setParam", kCameraSelectID,whichCam);
-        SleepMs(CAMERA_SLEEP_TIME);
-        currentCam =  camera->call<int>( "getParam", kCameraSelectID );
-        if (whichCam != currentCam){
-            std::cout << "Failed to switch to camera "<<whichCam
-                      <<" retry in " << CAMERA_SLEEP_TIME <<" ms" <<std::endl;
-            SleepMs(CAMERA_SLEEP_TIME);
-            currentCam =  camera->call<int>( "getParam", kCameraSelectID );
-            if (whichCam != currentCam){
-                std::cout << "Failed to switch to camera "<<whichCam
-                          <<" ... returning, no parameters initialized" <<std::endl;
-                return;
-            }
-        }
-        std::cout << "Switched to camera " << whichCam <<" successfully"<<std::endl;
-    }
-
-    // Turn off auto settings
-    // Auto exposure
-    try {
-        camera->callVoid("setParam", kCameraAutoExpositionID,
-                         DEFAULT_CAMERA_AUTO_EXPOSITION);
-    } catch (ALError &e){
-        log->error("ALImageTranscriber", "Couldn't set AutoExposition");
-    }
-    int param = camera->call<int>("getParam", kCameraAutoExpositionID);
-    // if that didn't work, then try again
-    if (param != DEFAULT_CAMERA_AUTO_EXPOSITION) {
-        try {
-            camera->callVoid("setParam", kCameraAutoExpositionID,
-                             DEFAULT_CAMERA_AUTO_EXPOSITION);
-        } catch (ALError &e){
-            log->error("ALImageTranscriber", "Couldn't set AutoExposition AGAIN");
-        }
-    }
-    // Auto white balance
-    try {
-        camera->callVoid("setParam", kCameraAutoWhiteBalanceID,
-                         DEFAULT_CAMERA_AUTO_WHITEBALANCE);
-
-    } catch (ALError &e){
-        log->error("ALImageTranscriber", "Couldn't set AutoWhiteBalance");
-    }
-    param = camera->call<int>("getParam", kCameraAutoWhiteBalanceID);
-    if (param != DEFAULT_CAMERA_AUTO_WHITEBALANCE) {
-        try {
-            camera->callVoid("setParam", kCameraAutoWhiteBalanceID,
-                             DEFAULT_CAMERA_AUTO_WHITEBALANCE);
-        } catch (ALError &e){
-            log->error("ALImageTranscriber","Couldn't set AutoWhiteBalance AGAIN");
-        }
-    }
-    // Auto gain
-    try {
-        camera->callVoid("setParam", kCameraAutoGainID,
-                         DEFAULT_CAMERA_AUTO_GAIN);
-    } catch (ALError &e){
-        log->error("ALImageTranscriber", "Couldn't set AutoGain");
-    }
-    param = camera->call<int>("getParam", kCameraAutoGainID);
-    if (param != DEFAULT_CAMERA_AUTO_GAIN) {
-        try {
-            camera->callVoid("setParam", kCameraAutoGainID,
-                             DEFAULT_CAMERA_AUTO_GAIN);
-        } catch (ALError &e){
-            log->error("ALImageTranscriber", "Couldn't set AutoGain AGAIN");
-        }
-    }
-    // Set camera defaults
-    // brightness
-    try {
-        camera->callVoid("setParam", kCameraBrightnessID,
-                         DEFAULT_CAMERA_BRIGHTNESS);
-    } catch (ALError &e){
-        log->error("ALImageTranscriber", "Couldn't set Brightness ");
-    }
-    param = camera->call<int>("getParam", kCameraBrightnessID);
-    if (param != DEFAULT_CAMERA_BRIGHTNESS) {
-        try {
-            camera->callVoid("setParam", kCameraBrightnessID,
-                             DEFAULT_CAMERA_BRIGHTNESS);
-        } catch (ALError &e){
-            log->error("ALImageTranscriber", "Couldn't set BRIGHTNESS AGAIN");
-        }
-    }
-    // contrast
-    try {
-        camera->callVoid("setParam", kCameraContrastID,
-                         DEFAULT_CAMERA_CONTRAST);
-    } catch (ALError &e){
-        log->error("ALImageTranscriber", "Couldn't set Contrast");
-    }
-    param = camera->call<int>("getParam", kCameraContrastID);
-    if (param != DEFAULT_CAMERA_CONTRAST) {
-        try {
-            camera->callVoid("setParam", kCameraContrastID,
-                             DEFAULT_CAMERA_CONTRAST);
-        } catch (ALError &e){
-            log->error("ALImageTranscriber", "Couldn't set Contrast AGAIN");
-        }
-    }
-    // Red chroma
-    try {
-        camera->callVoid("setParam", kCameraRedChromaID,
-                         DEFAULT_CAMERA_REDCHROMA);
-    } catch (ALError &e){
-        log->error("ALImageTranscriber", "Couldn't set RedChroma");
-    }
-    param = camera->call<int>("getParam", kCameraRedChromaID);
-    if (param != DEFAULT_CAMERA_REDCHROMA) {
-        try {
-            camera->callVoid("setParam", kCameraRedChromaID,
-                             DEFAULT_CAMERA_REDCHROMA);
-        } catch (ALError &e){
-            log->error("ALImageTranscriber", "Couldn't set RedChroma AGAIN");
-        }
-    }
-    // Blue chroma
-    try {
-        camera->callVoid("setParam", kCameraBlueChromaID,
-                         DEFAULT_CAMERA_BLUECHROMA);
-    } catch (ALError &e){
-        log->error("ALImageTranscriber", "Couldn't set BlueChroma");
-    }
-    param = camera->call<int>("getParam", kCameraBlueChromaID);
-    if (param != DEFAULT_CAMERA_BLUECHROMA) {
-        try {
-            camera->callVoid("setParam", kCameraBlueChromaID,
-                             DEFAULT_CAMERA_BLUECHROMA);
-        } catch (ALError &e){
-            log->error("ALImageTranscriber", "Couldn't set BlueChroma AGAIN");
-        }
-    }
-    // Exposure length
-    try {
-        camera->callVoid("setParam",kCameraExposureID,
-                         DEFAULT_CAMERA_EXPOSURE);
-    } catch (ALError &e) {
-        log->error("ALImageTranscriber", "Couldn't set Exposure");
-    }
-    param = camera->call<int>("getParam", kCameraExposureID);
-    if (param != DEFAULT_CAMERA_EXPOSURE) {
-        try {
-            camera->callVoid("setParam", kCameraExposureID,
-                             DEFAULT_CAMERA_EXPOSURE);
-        } catch (ALError &e){
-            log->error("ALImageTranscriber", "Couldn't set Exposure AGAIN");
-        }
-    }
-    // Gain
-    try {
-        camera->callVoid("setParam",kCameraGainID,
-                         DEFAULT_CAMERA_GAIN);
-    } catch (ALError &e) {
-        log->error("ALImageTranscriber", "Couldn't set Gain");
-    }
-    param = camera->call<int>("getParam", kCameraGainID);
-    if (param != DEFAULT_CAMERA_GAIN) {
-        try {
-            camera->callVoid("setParam", kCameraGainID,
-                             DEFAULT_CAMERA_GAIN);
-        } catch (ALError &e){
-            log->error("ALImageTranscriber", "Couldn't set Gain AGAIN");
-        }
-    }
-    // Saturation
-    try {
-        camera->callVoid("setParam",kCameraSaturationID,
-                         DEFAULT_CAMERA_SATURATION);
-    } catch (ALError &e) {
-        log->error("ALImageTranscriber", "Couldn't set Saturation");
-    }
-    param = camera->call<int>("getParam", kCameraSaturationID);
-    if (param != DEFAULT_CAMERA_SATURATION) {
-        try {
-            camera->callVoid("setParam", kCameraSaturationID,
-                             DEFAULT_CAMERA_SATURATION);
-        } catch (ALError &e){
-            log->error("ALImageTranscriber", "Couldn't set Saturation AGAIN");
-        }
-    }
-    // Hue
-    try {
-        camera->callVoid("setParam",kCameraHueID,
-                         DEFAULT_CAMERA_HUE);
-    } catch (ALError &e) {
-        log->error("ALImageTranscriber", "Couldn't set Hue");
-    }
-    param = camera->call<int>("getParam", kCameraHueID);
-    if (param != DEFAULT_CAMERA_HUE) {
-        try {
-            camera->callVoid("setParam", kCameraHueID,
-                             DEFAULT_CAMERA_HUE);
-        } catch (ALError &e){
-            log->error("ALImageTranscriber", "Couldn't set Hue AGAIN");
-        }
-    }
-    // Lens correction X
-    try {
-        camera->callVoid("setParam",kCameraLensXID,
-                         DEFAULT_CAMERA_LENSX);
-    } catch (ALError &e) {
-        log->error("ALImageTranscriber", "Couldn't set Lens Correction X");
-    }
-    param = camera->call<int>("getParam", kCameraLensXID);
-    if (param != DEFAULT_CAMERA_LENSX) {
-        try {
-            camera->callVoid("setParam", kCameraLensXID,
-                             DEFAULT_CAMERA_LENSX);
-        } catch (ALError &e){
-            log->error("ALImageTranscriber", "Couldn't set Lens Correction X AGAIN");
-        }
-    }
-    // Lens correction Y
-    try {
-        camera->callVoid("setParam",kCameraLensYID,
-                         DEFAULT_CAMERA_LENSY);
-    } catch (ALError &e) {
-        log->error("ALImageTranscriber", "Couldn't set Lens Correction Y");
-    }
-    param = camera->call<int>("getParam", kCameraLensYID);
-    if (param != DEFAULT_CAMERA_LENSY) {
-        try {
-            camera->callVoid("setParam", kCameraLensYID,
-                             DEFAULT_CAMERA_LENSY);
-        } catch (ALError &e){
-            log->error("ALImageTranscriber", "Couldn't set Lens Correction Y AGAIN");
-        }
-    }
-}
-
-
-void ALImageTranscriber::waitForImage ()
-{
-    try {
-#ifndef MAN_IS_REMOTE
-#ifdef DEBUG_IMAGE_REQUESTS
-        printf("Requesting local image of size %ix%i, color space %i\n",
-               IMAGE_WIDTH, IMAGE_HEIGHT, NAO_COLOR_SPACE);
-#endif
-        ALImage *ALimage = NULL;
-
-        // Attempt to retrieve the next image
-        try {
-            ALimage = (ALImage*) (camera->call<int>("getDirectRawImageLocal",lem_name));
-        }catch (ALError &e) {
-            log->error("NaoMain", "Could not call the getImageLocal method of the "
-                       "NaoCam module");
-        }
-        if (ALimage != NULL) {
-            memcpy(&image[0], ALimage->getFrame(), IMAGE_BYTE_SIZE);
-        }
+    if (-1 == xioctl (sd, VIDIOC_REQBUFS, &reqbuf)) {
+        if (errno == EINVAL)
+            printf ("Video capturing or mmap-streaming is not supported\n");
         else
-            std::cout << "\tALImage from camera was null!!" << std::endl;
+            perror ("VIDIOC_REQBUFS");
 
-#ifdef DEBUG_IMAGE_REQUESTS
-        //You can get some informations of the image.
-        int width = ALimage->fWidth;
-        int height = ALimage->fHeight;
-        int nbLayers = ALimage->fNbLayers;
-        int colorSpace = ALimage->fColorSpace;
-        long long timeStamp = ALimage->fTimeStamp;
-        int seconds = (int)(timeStamp/1000000LL);
-        printf("Retrieved an image of dimensions %ix%i, color space %i,"
-               "with %i layers and a time stamp of %is \n",
-               width, height, colorSpace,nbLayers,seconds);
-#endif
+        exit (EXIT_FAILURE);
+    }
+    std::cout << "count: " << reqbuf.count << std::endl;
 
-#else//Frame is remote:
-#ifdef DEBUG_IMAGE_REQUESTS
-        printf("Requesting remote image of size %ix%i, color space %i\n",
-               IMAGE_WIDTH, IMAGE_HEIGHT, NAO_COLOR_SPACE);
-#endif
-        ALValue ALimage;
-        ALimage.arraySetSize(7);
+    // zero initialize buffers array
+    memset (&buffers, 0, sizeof (buffers));
 
-        // Attempt to retrive the next image
-        try {
-            ALimage = camera->call<ALValue>("getDirectRawImageRemote",
-                                            lem_name);
-        }catch (ALError &e) {
-            log->error("NaoMain", "Could not call the getImageRemote method of the "
-                       "NaoCam module");
+    for (unsigned int i = 0; i < reqbuf.count; i++) {
+        v4l2_buffer buffer;
+
+        memset (&buffer, 0, sizeof (buffer));
+        buffer.type = reqbuf.type;
+	buffer.memory = reqbuf.memory;
+        buffer.index = i;
+
+        if (-1 == xioctl (sd, VIDIOC_QUERYBUF, &buffer)) {
+            perror ("VIDIOC_QUERYBUF");
+            exit (EXIT_FAILURE);
         }
 
-        //image = static_cast<const unsigned char*>(ALimage[6].GetBinary());
-        memcpy(&image[0], ALimage[6].GetBinary(), IMAGE_BYTE_SIZE);
-#ifdef DEBUG_IMAGE_REQUESTS
-        //You can get some informations of the image.
-        int width = (int) ALimage[0];
-        int height = (int) ALimage[1];
-        int nbLayers = (int) ALimage[2];
-        int colorSpace = (int) ALimage[3];
-        long long timeStamp = ((long long)(int)ALimage[4])*1000000LL +
-            ((long long)(int)ALimage[5]);
-        int seconds = (int)(timeStamp/1000000LL);
-        printf("Retrieved an image of dimensions %ix%i, color space %i,"
-               "with %i layers and a time stamp of %is \n",
-               width, height, colorSpace,nbLayers,seconds);
-#endif
+        buffers[i].length = buffer.length; /* remember for munmap() */
 
-#endif//IS_REMOTE
+        buffers[i].start = mmap (NULL, buffer.length,
+                                 PROT_READ | PROT_WRITE, /* recommended */
+                                 MAP_SHARED,             /* recommended */
+                                 sd, buffer.m.offset);
 
-        if (image != NULL) {
-            // Update Sensors image pointer
-            sensors->lockImage();
-            sensors->setImage(image);
-            sensors->releaseImage();
+        if (MAP_FAILED == buffers[i].start) {
+            /* If you do not exit here you should unmap() and free()
+               the buffers mapped so far. */
+            perror ("mmap");
+            exit (EXIT_FAILURE);
         }
-
-    }catch (ALError &e) {
-        log->error("NaoMain", "Caught an error in run():\n" + e.toString());
     }
 }
 
+void MmapImageTranscriber::initCameraSettings(){
+    // // set priority of this to highest
+    // v4l2_priority p;
+    // memset(&p, 0, sizeof(p));
+    // if (0 > xioctl(sd, VIDIOC_G_PRIORITY, &p)){
+    //     log->error("MmapImageTranscriber", "getting priority failed ");
+    // }
+    // if (p != V4L2_PRIORITY_RECORD){
+    //     // throws error is it's already set to highest
+    //     if (0 > xioctl(sd, VIDIOC_S_PRIORITY, &p)){
+    //         log->error("MmapImageTranscriber", "setting priority failed ");
+    //     }
+    // }
 
-void ALImageTranscriber::releaseImage(){
-#ifndef MAN_IS_REMOTE
-    if (!camera_active)
-        return;
+    // set video type (VGA, QVGA)
+    v4l2_std_id std_id = (v4l2_std_id)esid0;
+    if (-1 == xioctl (sd, VIDIOC_S_STD, &std_id)) {
+        perror ("VIDIOC_S_STD");
+    }
 
-    //Now you have finished with the image, you have to release it in the V.I.M.
-    try
-        {
-            camera->call<int>( "releaseDirectRawImage", lem_name );
-        }catch( ALError& e)
-        {
-            log->error( "ALImageTranscriber",
-                        "could not call the releaseImage method of the NaoCam module" );
-        }
-#endif
-}
+    // set video size and pixel format
+    v4l2_format fmt0;
+    memset( &fmt0, 0, sizeof( fmt0 ) );
+    fmt0.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    fmt0.fmt.pix.field = V4L2_FIELD_ANY; //INTERLACED?
+    fmt0.fmt.pix.width = NAO_IMAGE_WIDTH;
+    fmt0.fmt.pix.height = NAO_IMAGE_HEIGHT;
+    fmt0.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+    if (0 != xioctl( sd, VIDIOC_S_FMT, &fmt0 )){
+        log->error("MmapImageTranscriber", "failed to set video format");
+    }
 
-void ALImageTranscriber::testV4L2SetValues(){
-    struct v4l2_cropcap cropcap;
-    struct v4l2_crop crop;
-    struct v4l2_format format;
-    double hscale, vscale;
-    double aspect;
-    int dwidth, dheight;
-
-    memset (&cropcap, 0, sizeof (cropcap));
+    v4l2_cropcap cropcap;
+    memset(&cropcap, 0, sizeof(cropcap));
     cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-    if (-1 == ioctl (fd, VIDIOC_CROPCAP, &cropcap)) {
-        std::cout << "2" << std::endl;
-        perror ("VIDIOC_CROPCAP");
-    }
+    if (0 == xioctl (sd, VIDIOC_CROPCAP, &cropcap)) {
+        v4l2_crop crop;
+        memset(&crop, 0, sizeof(crop));
+        crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        crop.c = cropcap.defrect; /* reset to default */
 
-    memset (&crop, 0, sizeof (crop));
-    crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-
-    if (-1 == ioctl (fd, VIDIOC_G_CROP, &crop)) {
-        if (errno != EINVAL) {
-            perror ("VIDIOC_G_CROP");
+        if (-1 == xioctl (sd, VIDIOC_S_CROP, &crop)) {
+            log->error("MmapImageTranscriber", "error setting cropping");
         }
-
-        /* Cropping not supported. */
-        crop.c = cropcap.defrect;
+    }
+    else {
+        log->error("MmapImageTranscriber", "error getting crop info");
     }
 
-    memset (&format, 0, sizeof (format));
-    format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-    if (-1 == ioctl (fd, VIDIOC_G_FMT, &format)) {
-        perror ("VIDIOC_G_FMT");
+    v4l2_streamparm param;
+    memset (&param, 0, sizeof(param));
+    param.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    // get current streaming param
+    if (0 > xioctl(sd, VIDIOC_G_PARM, &param)){
+        log->error("MmapImageTranscriber", "getting streaming param failed");
     }
 
-    /* The scaling applied by the driver. */
+    // reset to what we want
+    param.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    param.parm.capture.timeperframe.numerator = 1.;
+    param.parm.capture.timeperframe.denominator = VISION_FPS;
+    param.parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
 
-    hscale = format.fmt.pix.width / (double) crop.c.width;
-    vscale = format.fmt.pix.height / (double) crop.c.height;
+    // set driver to only capture at 30 fps, saving overhead
+    if (0 > xioctl(sd, VIDIOC_S_PARM, &param)){
+        log->error("MmapImageTranscriber", "setting streaming param failed");
+    }
+}
 
-    aspect = cropcap.pixelaspect.numerator /
-        (double) cropcap.pixelaspect.denominator;
-    aspect = aspect * hscale / vscale;
+void MmapImageTranscriber::waitForImage (){
+    // backup last_frame here, so we can enqueue it after we're done w/it
+    last_frame = current_frame;
+    memset(&current_frame, 0, sizeof(current_frame));
+    current_frame.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    current_frame.memory = V4L2_MEMORY_MMAP;
 
-    /* Devices following ITU-R BT.601 do not capture
-       square pixels. For playback on a computer monitor
-       we should scale the images to this size. */
+    // this function blocks until frame is available
+    if (0 > xioctl(sd, VIDIOC_DQBUF, &current_frame)){
+        log->error("MmapImageTranscriber", "could not get frame");
+    }
 
-    dwidth = format.fmt.pix.width / aspect;
-    dheight = format.fmt.pix.height;
-    std::cout << "dwidth: " << dwidth << std::endl;
-    std::cout << "dheight " << dheight<< std::endl;
+    // Update Sensors image pointer
+    sensors->lockImage();
+    // image is an unsigned char *
+    sensors->setImage(static_cast<unsigned char*>
+                      (buffers[current_frame.index].start));
+    sensors->releaseImage();
+
+    // enqueue old buffer for reuse
+    if (0 > xioctl(sd, VIDIOC_QBUF, &last_frame)){
+        perror("VIDIOC_QBUF");
+    }
+}
+
+
+void MmapImageTranscriber::releaseImage(){
 }

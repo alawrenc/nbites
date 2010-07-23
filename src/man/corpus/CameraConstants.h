@@ -10,6 +10,15 @@ static const int BOTTOM_CAMERA = 1;
 static const int CAMERA_SLEEP_TIME = 200;
 static const int CAM_PARAM_RETRIES = 3;
 
+#if NAO_IMAGE_SIZE == VGA
+#define esid0 0x08000000UL
+#elif NAO_IMAGE_SIZE == QVGA
+#define esid0 0x04000000UL
+#else
+#  error Undefined Nao image type
+#endif
+
+
 #define OC_PARAMS
 #ifdef OC_PARAMS
 static const int DEFAULT_CAMERA_RESOLUTION = 14;

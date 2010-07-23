@@ -51,6 +51,7 @@ typedef TTMan ALMan;
 
 #include "ALTranscriber.h"
 #include "ALImageTranscriber.h"
+#include "MmapImageTranscriber.h"
 
 #include "NaoLights.h"
 
@@ -60,15 +61,11 @@ using namespace std;
 using namespace AL;
 using boost::shared_ptr;
 
-
-
-
-
 static shared_ptr<ALMan> man;
 static shared_ptr<Sensors> sensors;
 static shared_ptr<Synchro> synchro;
 static shared_ptr<ALTranscriber> transcriber;
-static shared_ptr<ALImageTranscriber> imageTranscriber;
+static shared_ptr<MmapImageTranscriber> imageTranscriber;
 static shared_ptr<EnactorT> enactor;
 static shared_ptr<Lights> lights;
 
@@ -86,8 +83,8 @@ void ALCreateMan( ALPtr<ALBroker> broker){
     sensors = shared_ptr<Sensors>(new Sensors);
     transcriber = shared_ptr<ALTranscriber>(new ALTranscriber(broker,sensors));
     imageTranscriber =
-        shared_ptr<ALImageTranscriber>
-        (new ALImageTranscriber(synchro, sensors, broker));
+        shared_ptr<MmapImageTranscriber>
+        (new MmapImageTranscriber(synchro, sensors, broker));
 
 #ifdef USE_DCM
     enactor = shared_ptr<EnactorT>(new EnactorT(sensors,
@@ -101,9 +98,9 @@ void ALCreateMan( ALPtr<ALBroker> broker){
     //setLedsProxy(AL::ALPtr<AL::ALLedsProxy>(new AL::ALLedsProxy(broker)));
 
     man = boost::shared_ptr<ALMan> (new ALMan(sensors,
-                                          transcriber,
-                                          imageTranscriber,
-                                          enactor,
+                                              transcriber,
+                                              imageTranscriber,
+                                              enactor,
                                               synchro,
                                               lights));
     man->startSubThreads();
@@ -128,45 +125,45 @@ extern "C"
 {
 #endif
 
-ALCALL int _createModule( ALPtr<ALBroker> pBroker )
-{
+    ALCALL int _createModule( ALPtr<ALBroker> pBroker )
+    {
 #ifdef REDIRECT_C_STDERR
-  // Redirect stderr to stdout
-  FILE *_syderr = stderr;
+        // Redirect stderr to stdout
+        FILE *_syderr = stderr;
 #ifndef __APPLE__
-  stderr = stdout;
+        stderr = stdout;
 #endif
 #endif
 
-  // init broker with the main broker inctance
-  // from the parent executable
-  ALBrokerManager::setInstance(pBroker->fBrokerManager.lock());
-  ALBrokerManager::getInstance()->addBroker(pBroker);
+        // init broker with the main broker inctance
+        // from the parent executable
+        ALBrokerManager::setInstance(pBroker->fBrokerManager.lock());
+        ALBrokerManager::getInstance()->addBroker(pBroker);
 
-  // create modules instance
-  //<OGETINSTANCE> don't remove this comment
+        // create modules instance
+        //<OGETINSTANCE> don't remove this comment
 
-  //</OGETINSTANCE> don't remove this comment
+        //</OGETINSTANCE> don't remove this comment
 
-  //NBites code
-  ALCreateMan(pBroker);
-  //man  = boost::shared_ptr<Man>(new Man(pBroker,"Man"));
-  //man->manStart();
+        //NBites code
+        ALCreateMan(pBroker);
+        //man  = boost::shared_ptr<Man>(new Man(pBroker,"Man"));
+        //man->manStart();
 
-  return 0;
-}
+        return 0;
+    }
 
-ALCALL int _closeModule(  )
-{
-  // Delete module instance
-  //<OKILLINSTANCE> don't remove this comment
-  //ALPtr<ALProxy>
-  // man  = pBroker->getProxy("Man");
-    ALDestroyMan();
-  //</OKILLINSTANCE> don't remove this comment
+    ALCALL int _closeModule(  )
+    {
+        // Delete module instance
+        //<OKILLINSTANCE> don't remove this comment
+        //ALPtr<ALProxy>
+        // man  = pBroker->getProxy("Man");
+        ALDestroyMan();
+        //</OKILLINSTANCE> don't remove this comment
 
-  return 0;
-}
+        return 0;
+    }
 
 # ifdef __cplusplus
 }
@@ -175,114 +172,121 @@ ALCALL int _closeModule(  )
 #else//MAN_IS_REMOTE
 void _terminationHandler( int signum )
 {
-  //ALPtr<ALProxy> man  = pBroker->getProxy("Man");
+    //ALPtr<ALProxy> man  = pBroker->getProxy("Man");
 
-  if (signum == SIGINT) {
-    // no direct exit, main thread will exit when finished
-    cerr << "Exiting Man via thread stop." << endl;
-    ALDestroyMan();
-  }
-  else {
-    cerr << "Emergency stop -- exiting immediately" << endl;
-    // fault, exit immediately
-    ::exit(1);
-  }
-  ALBrokerManager::getInstance()->killAllBroker();
-  ALBrokerManager::kill();
-  exit(0);
+    if (signum == SIGINT) {
+        // no direct exit, main thread will exit when finished
+        cerr << "Exiting Man via thread stop." << endl;
+        ALDestroyMan();
+    }
+    else {
+        cerr << "Emergency stop -- exiting immediately" << endl;
+        // fault, exit immediately
+        ::exit(1);
+    }
+    ALBrokerManager::getInstance()->killAllBroker();
+    ALBrokerManager::kill();
+    exit(0);
 }
 
 
 int usage( char* progName )
 {
-  std::cout << progName <<", a remote module of naoqi !" << std::endl
+    std::cout << progName <<", a remote module of naoqi !" << std::endl
 
-            << "USAGE :" << std::endl
-            << "-b\t<ip> : binding ip of the server. Default is 127.0.0.1" << std::endl
-            << "-p\t<port> : binding port of the server. Default is 9559" << std::endl
-            << "-pip\t<ip> : ip of the parent broker. Default is 127.0.0.1" << std::endl
-            << "-pport\t<ip> : port of the parent broker. Default is 9559" << std::endl
-            << "-h\t: Display this help\n" << std::endl;
-  return 0;
+              << "USAGE :" << std::endl
+              << "-b\t<ip> : binding ip of the server. Default is 127.0.0.1" << std::endl
+              << "-p\t<port> : binding port of the server. Default is 9559" << std::endl
+              << "-pip\t<ip> : ip of the parent broker. Default is 127.0.0.1" << std::endl
+              << "-pport\t<ip> : port of the parent broker. Default is 9559" << std::endl
+              << "-h\t: Display this help\n" << std::endl;
+    return 0;
 }
 
 int main( int argc, char *argv[] )
 {
 #ifdef REDIRECT_C_STDERR
-  // Redirect stderr to stdout
-  FILE *_syderr = stderr;
-  stderr = stdout;
+    // Redirect stderr to stdout
+    FILE *_syderr = stderr;
+    stderr = stdout;
 #endif
 
-  std::cout << "..::: starting MANMODULE revision " << MANMODULE_VERSION_REVISION << " :::.." << std::endl;
-  std::cout << "Copyright (c) 2007, Aldebaran-robotics" << std::endl << std::endl;
+    std::cout << "..::: starting MANMODULE revision " << MANMODULE_VERSION_REVISION << " :::.." << std::endl;
+    std::cout << "Copyright (c) 2007, Aldebaran-robotics" << std::endl << std::endl;
 
-  int  i = 1;
-  std::string brokerName = "manmodule";
-  std::string brokerIP = "0.0.0.0";
-  int brokerPort = 0 ;
-  // Default parent broker IP
-  std::string parentBrokerIP = "127.0.0.1";
-  // Default parent broker port
-  int parentBrokerPort = kBrokerPort;
+    int  i = 1;
+    std::string brokerName = "manmodule";
+    std::string brokerIP = "0.0.0.0";
+    int brokerPort = 0 ;
+    // Default parent broker IP
+    std::string parentBrokerIP = "127.0.0.1";
+    // Default parent broker port
+    int parentBrokerPort = kBrokerPort;
 
-  // checking options
-  while( i < argc ) {
-    if ( argv[i][0] != '-' ) return usage( argv[0] );
-    else if ( std::string( argv[i] ) == "-b" )        brokerIP          = std::string( argv[++i] );
-    else if ( std::string( argv[i] ) == "-p" )        brokerPort        = atoi( argv[++i] );
-    else if ( std::string( argv[i] ) == "-pip" )      parentBrokerIP    = std::string( argv[++i] );
-    else if ( std::string( argv[i] ) == "-pport" )    parentBrokerPort  = atoi( argv[++i] );
-    else if ( std::string( argv[i] ) == "-h" )        return usage( argv[0] );
-    i++;
-  }
+    // checking options
+    while( i < argc ) {
+        if ( argv[i][0] != '-' ) return usage( argv[0] );
+        else if ( std::string( argv[i] ) == "-b" )
+            brokerIP          = std::string( argv[++i] );
+        else if ( std::string( argv[i] ) == "-p" )
+            brokerPort        = atoi( argv[++i] );
+        else if ( std::string( argv[i] ) == "-pip" )
+            parentBrokerIP    = std::string( argv[++i] );
+        else if ( std::string( argv[i] ) == "-pport" )
+            parentBrokerPort  = atoi( argv[++i] );
+        else if ( std::string( argv[i] ) == "-h" )
+            return usage( argv[0] );
+        i++;
+    }
 
-  // If server port is not set
-  if ( !brokerPort )
-    brokerPort = FindFreePort( brokerIP );
+    // If server port is not set
+    if ( !brokerPort )
+        brokerPort = FindFreePort( brokerIP );
 
-  std::cout << "Try to connect to parent Broker at ip :" << parentBrokerIP
-            << " and port : " << parentBrokerPort << std::endl;
-  std::cout << "Start the server bind on this ip :  " << brokerIP
-            << " and port : " << brokerPort << std::endl;
+    std::cout << "Try to connect to parent Broker at ip :" << parentBrokerIP
+              << " and port : " << parentBrokerPort << std::endl;
+    std::cout << "Start the server bind on this ip :  " << brokerIP
+              << " and port : " << brokerPort << std::endl;
 
-  // Starting Broker
- ALPtr<ALBroker> pBroker = ALBroker::createBroker(brokerName, brokerIP, brokerPort, parentBrokerIP,  parentBrokerPort);
- pBroker->setBrokerManagerInstance(ALBrokerManager::getInstance());
+    // Starting Broker
+    ALPtr<ALBroker> pBroker = ALBroker::createBroker(brokerName, brokerIP,
+                                                     brokerPort, parentBrokerIP,
+                                                     parentBrokerPort);
+        pBroker->setBrokerManagerInstance(ALBrokerManager::getInstance());
 
 
-  //<OGETINSTANCE> don't remove this comment
- //ALPtr<Man> manptr = ALModule::createModule<Man>(pBroker,"Man" );
-  //</OGETINSTANCE> don't remove this comment
+        //<OGETINSTANCE> don't remove this comment
+        //ALPtr<Man> manptr = ALModule::createModule<Man>(pBroker,"Man" );
+        //</OGETINSTANCE> don't remove this comment
 
 #ifndef _WIN32
-  struct sigaction new_action;
-  /* Set up the structure to specify the new action. */
-  new_action.sa_handler = _terminationHandler;
-  sigemptyset( &new_action.sa_mask );
-  new_action.sa_flags = 0;
+        struct sigaction new_action;
+        /* Set up the structure to specify the new action. */
+        new_action.sa_handler = _terminationHandler;
+        sigemptyset( &new_action.sa_mask );
+        new_action.sa_flags = 0;
 
-  sigaction( SIGINT, &new_action, NULL );
+        sigaction( SIGINT, &new_action, NULL );
 #endif
 
-  //man = boost::shared_ptr<Man>(new Man(pBroker,"Man"));
-  ALCreateMan(pBroker);
+        //man = boost::shared_ptr<Man>(new Man(pBroker,"Man"));
+        ALCreateMan(pBroker);
 
-  //man->getTrigger()->await_off();
-//   //   Not sure what the purpose of this modulegenerator code is: //EDIT -JS
-   pBroker.reset(); // because of while( 1 ), broker counted by brokermanager
-   while( 1)
-   {
-     SleepMs( 100 );
-   }
+        //man->getTrigger()->await_off();
+        //   //   Not sure what the purpose of this modulegenerator code is: //EDIT -JS
+        pBroker.reset(); // because of while( 1 ), broker counted by brokermanager
+        while( 1)
+            {
+                //SleepMs( 100 );
+            }
 
-  cout << "Main method finished" <<endl;
+        cout << "Main method finished" <<endl;
 
 
 #ifdef _WIN32
-  _terminationHandler( 0 );
+        _terminationHandler( 0 );
 #endif
 
-  exit( 0 );
+        exit( 0 );
 }
 #endif//MAN_IS_REMOTE

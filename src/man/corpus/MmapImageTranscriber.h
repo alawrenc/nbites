@@ -17,16 +17,16 @@
 #include <sys/mman.h>
 #include <errno.h>
 
-class ALImageTranscriber : public ThreadedImageTranscriber {
+class MmapImageTranscriber : public ThreadedImageTranscriber {
  public:
-    ALImageTranscriber(boost::shared_ptr<Synchro> synchro,
+    MmapImageTranscriber(boost::shared_ptr<Synchro> synchro,
                        boost::shared_ptr<Sensors> s,
                        AL::ALPtr<AL::ALBroker> broker);
-    virtual ~ALImageTranscriber();
+    virtual ~MmapImageTranscriber();
 
  private:
-    ALImageTranscriber(const ALImageTranscriber &other);
-    void operator= (const ALImageTranscriber &other);
+    MmapImageTranscriber(const MmapImageTranscriber &other);
+    void operator= (const MmapImageTranscriber &other);
 
  public:
 
@@ -36,24 +36,33 @@ class ALImageTranscriber : public ThreadedImageTranscriber {
     void releaseImage();
 
  private: // helper methods
-    bool registerCamera(AL::ALPtr<AL::ALBroker> broker);
-    void initCameraSettings(int whichCam);
+    bool registerCamera();
+    void initCameraSettings();
     void waitForImage();
-    void testV4L2SetValues();
+    void initializeBuffers();
+    void start_streaming();
+    void stop_streaming();
+    int xioctl (int fd, int request, void * arg);
 
  private: // member variables
     // Interfaces/Proxies to robot
 
-    int fd;
+    // stream descriptor for video camera
+    int sd;
     AL::ALPtr<AL::ALLoggerProxy> log;
-
-    std::string lem_name;
-
     bool camera_active;
 
     // Keep a local copy of the image because accessing the one from NaoQi is
     // from the kernel and thus very slow.
     unsigned char *image;
+    static const unsigned int REQUIRED_BUFFERS = 4;
+    struct image_buffer{
+        void *start;
+        size_t length;
+    };
+    image_buffer buffers [REQUIRED_BUFFERS];
+    v4l2_buffer current_frame;
+    v4l2_buffer last_frame;
 };
 
 #endif
