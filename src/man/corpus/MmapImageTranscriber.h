@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <errno.h>
+#include <malloc.h>
 
 class MmapImageTranscriber : public ThreadedImageTranscriber {
  public:
@@ -33,33 +34,48 @@ class MmapImageTranscriber : public ThreadedImageTranscriber {
     int start();
     void run();
     void stop();
-    void releaseImage();
+    void releaseImage() {};
 
  private: // helper methods
-    bool registerCamera();
-    void initCameraSettings();
-    void waitForImage();
-    void initializeBuffers();
-    void start_streaming();
-    void stop_streaming();
+    void errno_exit(const char * s);
+    void process_image(const void * p);
+    void start_capturing();
+    void stop_capturing();
+    int read_frame();
+    void init_read(unsigned int i);
+    void init_mmap();
+    void init_userp(unsigned int buf_size);
+    void init_device();
+    void uninit_device();
+    bool open_device();
+    void close_device();
     int xioctl (int fd, int request, void * arg);
 
  private: // member variables
     // Interfaces/Proxies to robot
 
     // stream descriptor for video camera
-    int sd;
     AL::ALPtr<AL::ALLoggerProxy> log;
     bool camera_active;
 
-    static const unsigned int REQUIRED_BUFFERS = 4;
-    struct image_buffer{
-        unsigned char *start;
+    struct buffer {
+        void * start;
         size_t length;
     };
-    image_buffer buffers [REQUIRED_BUFFERS];
-    v4l2_buffer current_frame;
-    v4l2_buffer last_frame;
+
+    char * dev_name;
+    int fd;
+    buffer * buffers;
+    unsigned int n_buffers;
+
+    typedef enum {
+        IO_METHOD_READ,
+        IO_METHOD_MMAP,
+        IO_METHOD_USERPTR,
+    } io_method;
+
+    static const io_method io = IO_METHOD_MMAP;
+
 };
 
 #endif

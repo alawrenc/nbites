@@ -1,5 +1,3 @@
-#include "alvision/alimage.h"
-#include "alvision/alvisiondefinitions.h"
 
 #include "manconfig.h"
 
@@ -13,23 +11,20 @@
 
 using boost::shared_ptr;
 using namespace AL;
-#define USE_MMAP
 
-int MmapImageTranscriber::xioctl (int fd, int request, void * arg)
-{
-    int r;
+#define CLEAR(x) memset (&(x), 0, sizeof (x))
 
-    do r = ioctl (fd, request, arg);
-    while (-1 == r && EINTR == errno);
-
-    return r;
+void MmapImageTranscriber::process_image (const void * p){
+    fputc ('.', stdout);
+    fflush (stdout);
+    sensors->setImage(static_cast<const unsigned char*>(p));
 }
 
 MmapImageTranscriber::MmapImageTranscriber(shared_ptr<Synchro> synchro,
                                            shared_ptr<Sensors> s,
                                            ALPtr<ALBroker> broker)
     : ThreadedImageTranscriber(s,synchro,"MmapImageTranscriber"),
-      log(), camera_active(false)
+      log(), camera_active(false), dev_name("/dev/video0"), fd(-1)
 {
     try {
         log = broker->getLoggerProxy();
@@ -41,10 +36,10 @@ MmapImageTranscriber::MmapImageTranscriber(shared_ptr<Synchro> synchro,
     }
 
 #ifdef USE_VISION
-    if (registerCamera()){
+    if (open_device()){
         camera_active = true;
-        initializeBuffers();
-        initCameraSettings();
+        init_device();
+        start_capturing();
     }
     else {
         camera_active = false;
@@ -54,42 +49,10 @@ MmapImageTranscriber::MmapImageTranscriber(shared_ptr<Synchro> synchro,
 }
 
 MmapImageTranscriber::~MmapImageTranscriber() {
-    stop();
-    //delete[] buffers;
-}
-
-int MmapImageTranscriber::start() {
-    return Thread::start();
-}
-
-void MmapImageTranscriber::start_streaming() {
-
-    // enqueue buffers to be filled
-    v4l2_buffer buffer;
-    for (unsigned int i = 0; i < REQUIRED_BUFFERS; ++i){
-        memset(&buffer, 0, sizeof(buffer));
-        buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buffer.memory = V4L2_MEMORY_MMAP;
-        buffer.index = i;
-
-        if ( 0 > xioctl(sd, VIDIOC_QBUF, &buffer)){
-            log->error("MmapImageTranscriber", "problem queueing buffer");
-        }
-    }
-
-    memset(&current_frame, 0, sizeof(current_frame));
-    current_frame.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    current_frame.memory = V4L2_MEMORY_MMAP;
-    current_frame.index = buffer.index;
-
-    memset(&last_frame, 0, sizeof(last_frame));
-    last_frame.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    last_frame.memory = V4L2_MEMORY_MMAP;
-    last_frame.index = buffer.index - 1;
-
-    v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (0 > xioctl(sd,VIDIOC_STREAMON, &type)){
-        log->error("MmapImageTranscriber", "video streaming failed to start");
+    if (camera_active){
+        stop_capturing();
+        uninit_device();
+        close_device();
     }
 }
 
@@ -97,76 +60,45 @@ void MmapImageTranscriber::run() {
     Thread::running = true;
     Thread::trigger->on();
 
-    start_streaming();
-
-    long long lastProcessTimeAvg = VISION_FRAME_LENGTH_uS;
-
-    struct timespec interval, remainder;
     while (Thread::running) {
-        //start timer
-        const long long startTime = micro_time();
-
         if (camera_active){
+            //start timer
             fd_set fds;
             struct timeval tv;
             int r;
+
             FD_ZERO (&fds);
-            FD_SET (sd, &fds);
+            FD_SET (fd, &fds);
 
             /* Timeout. */
-            tv.tv_sec = 5;
+            tv.tv_sec = 2;
             tv.tv_usec = 0;
 
-            do {
-                r = select (sd + 1, &fds, NULL, NULL, &tv);
-                if (-1 == r) {
-                    if (EINTR == errno){
-                        log->error("MmapImageTranscriber", "select");
-                    }
-                }
+            r = select (fd + 1, &fds, NULL, NULL, &tv);
 
-                if (0 == r) {
-                    log->error("MmapImageTranscriber","select timeout");
-                }
+            if (-1 == r) {
+                if (EINTR == errno)
+                    continue;
+
+                errno_exit ("select");
             }
-            while (0 >= r);
-            waitForImage();
+
+            if (0 == r) {
+                fprintf (stderr, "select timeout\n");
+                exit (EXIT_FAILURE);
+            }
+
+            if (read_frame ())
+                break;
         }
 
-        subscriber->notifyNextVisionImage();
-
-        //stop timer
-        const long long processTime = micro_time() - startTime;
-        //sleep until next frame
-
-        lastProcessTimeAvg = lastProcessTimeAvg/2 + processTime/2;
-
-        if (processTime > VISION_FRAME_LENGTH_uS) {
-            if (processTime > VISION_FRAME_LENGTH_PRINT_THRESH_uS) {
-                //#ifdef DEBUG_ALIMAGE_LOOP
-                std::cout << "Time spent in MmapImageTranscriber loop longer than"
-                          << " frame length: " << processTime <<std::endl;
-                //#endif
-            }
-            //Don't sleep at all
-        } else{
-            const long int microSleepTime = (VISION_FRAME_LENGTH_uS -
-                                             processTime);
-            const long int nanoSleepTime =
-                (microSleepTime %(1000 * 1000)) * 1000;
-
-            const long int secSleepTime = microSleepTime / (1000*1000);
-
-            // std::cout << "Sleeping for nano: " << nanoSleepTime <<
-            //          " and sec:" << secSleepTime << std::endl;
-
-            interval.tv_sec = secSleepTime;
-            interval.tv_nsec = nanoSleepTime;
-
-            nanosleep(&interval, &remainder);
-        }
     }
+
     Thread::trigger->off();
+}
+
+int MmapImageTranscriber::start() {
+    return Thread::start();
 }
 
 void MmapImageTranscriber::stop() {
@@ -174,12 +106,9 @@ void MmapImageTranscriber::stop() {
     running = false;
 #ifdef USE_VISION
     if(camera_active){
-        stop_streaming();
-        close(sd);
-        sd = -1;
-    }
-    for (unsigned int i = 0; i < REQUIRED_BUFFERS; i++){
-        munmap (buffers[i].start, buffers[i].length);
+        stop_capturing();
+        uninit_device();
+        close_device();
     }
 
 #endif
@@ -187,206 +116,461 @@ void MmapImageTranscriber::stop() {
     Thread::stop();
 }
 
-void MmapImageTranscriber::stop_streaming() {
-    v4l2_buf_type type;
-    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (0 > xioctl(sd,VIDIOC_STREAMOFF, &type)){
-        log->error("MmapImageTranscriber", "video streaming failed to stop");
+void MmapImageTranscriber::start_capturing() {
+    unsigned int i;
+    enum v4l2_buf_type type;
+
+    switch (io) {
+    case IO_METHOD_READ:
+        /* Nothing to do. */
+        break;
+
+    case IO_METHOD_MMAP:
+        for (i = 0; i < n_buffers; ++i) {
+            struct v4l2_buffer buf;
+
+            CLEAR (buf);
+
+            buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            buf.memory      = V4L2_MEMORY_MMAP;
+            buf.index       = i;
+
+            if (-1 == xioctl (fd, VIDIOC_QBUF, &buf))
+                errno_exit ("VIDIOC_QBUF");
+        }
+
+        type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+        if (-1 == xioctl (fd, VIDIOC_STREAMON, &type))
+            errno_exit ("VIDIOC_STREAMON");
+
+        break;
+
+    case IO_METHOD_USERPTR:
+        for (i = 0; i < n_buffers; ++i) {
+            struct v4l2_buffer buf;
+
+            CLEAR (buf);
+
+            buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            buf.memory      = V4L2_MEMORY_USERPTR;
+            buf.index       = i;
+            buf.m.userptr	= (unsigned long) buffers[i].start;
+            buf.length      = buffers[i].length;
+
+            if (-1 == xioctl (fd, VIDIOC_QBUF, &buf))
+                errno_exit ("VIDIOC_QBUF");
+        }
+
+        type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+        if (-1 == xioctl (fd, VIDIOC_STREAMON, &type))
+            errno_exit ("VIDIOC_STREAMON");
+
+        break;
     }
 }
 
-bool MmapImageTranscriber::registerCamera() {
-    sd = open ("/dev/video0", O_RDWR | O_NONBLOCK, 0);
-    if (0 > sd){
-        log->error("MmapImageTranscriber",
-                   "Could not attach to video device");
+void MmapImageTranscriber::stop_capturing() {
+    enum v4l2_buf_type type;
+
+    switch (io) {
+    case IO_METHOD_READ:
+        /* Nothing to do. */
+        break;
+
+    case IO_METHOD_MMAP:
+    case IO_METHOD_USERPTR:
+        type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+        if (-1 == xioctl (fd, VIDIOC_STREAMOFF, &type))
+            errno_exit ("VIDIOC_STREAMOFF");
+        break;
+    }
+}
+
+int MmapImageTranscriber::read_frame (void){
+    struct v4l2_buffer buf;
+    unsigned int i;
+
+    switch (io) {
+    case IO_METHOD_READ:
+        if (-1 == read (fd, buffers[0].start, buffers[0].length)) {
+            switch (errno) {
+            case EAGAIN:
+                return 0;
+
+            case EIO:
+                /* Could ignore EIO, see spec. */
+
+                /* fall through */
+
+            default:
+                errno_exit ("read");
+            }
+        }
+
+        process_image (buffers[0].start);
+
+        break;
+
+    case IO_METHOD_MMAP:
+        CLEAR (buf);
+
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+
+        if (-1 == xioctl (fd, VIDIOC_DQBUF, &buf)) {
+            switch (errno) {
+            case EAGAIN:
+                return 0;
+
+            case EIO:
+                /* Could ignore EIO, see spec. */
+
+                /* fall through */
+
+            default:
+                errno_exit ("VIDIOC_DQBUF");
+            }
+        }
+
+        assert (buf.index < n_buffers);
+
+        process_image (buffers[buf.index].start);
+
+        if (-1 == xioctl (fd, VIDIOC_QBUF, &buf))
+            errno_exit ("VIDIOC_QBUF");
+
+        break;
+
+    case IO_METHOD_USERPTR:
+        CLEAR (buf);
+
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_USERPTR;
+
+        if (-1 == xioctl (fd, VIDIOC_DQBUF, &buf)) {
+            switch (errno) {
+            case EAGAIN:
+                return 0;
+
+            case EIO:
+                /* Could ignore EIO, see spec. */
+
+                /* fall through */
+
+            default:
+                errno_exit ("VIDIOC_DQBUF");
+            }
+        }
+
+        for (i = 0; i < n_buffers; ++i)
+            if (buf.m.userptr == (unsigned long) buffers[i].start
+                && buf.length == buffers[i].length)
+                break;
+
+        assert (i < n_buffers);
+
+        process_image ((void *) buf.m.userptr);
+
+        if (-1 == xioctl (fd, VIDIOC_QBUF, &buf))
+            errno_exit ("VIDIOC_QBUF");
+
+        break;
+    }
+
+    return 1;
+}
+
+void MmapImageTranscriber::init_read (unsigned int buffer_size){
+    buffers = static_cast<buffer*>(calloc (1, sizeof (*buffers)));
+
+    if (!buffers) {
+        fprintf (stderr, "Out of memory\n");
+        exit (EXIT_FAILURE);
+    }
+
+    buffers[0].length = buffer_size;
+    buffers[0].start = malloc (buffer_size);
+
+    if (!buffers[0].start) {
+        fprintf (stderr, "Out of memory\n");
+        exit (EXIT_FAILURE);
+    }
+}
+
+void MmapImageTranscriber::init_mmap (void){
+    struct v4l2_requestbuffers req;
+
+    CLEAR (req);
+
+    req.count               = 4;
+    req.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.memory              = V4L2_MEMORY_MMAP;
+
+    if (-1 == xioctl (fd, VIDIOC_REQBUFS, &req)) {
+        if (EINVAL == errno) {
+            fprintf (stderr, "%s does not support "
+                     "memory mapping\n", dev_name);
+            exit (EXIT_FAILURE);
+        } else {
+            errno_exit ("VIDIOC_REQBUFS");
+        }
+    }
+
+    if (req.count < 2) {
+        fprintf (stderr, "Insufficient buffer memory on %s\n",
+                 dev_name);
+        exit (EXIT_FAILURE);
+    }
+
+    buffers = static_cast<buffer*>(calloc (req.count, sizeof (*buffers)));
+
+    if (!buffers) {
+        fprintf (stderr, "Out of memory\n");
+        exit (EXIT_FAILURE);
+    }
+
+    for (n_buffers = 0; n_buffers < req.count; ++n_buffers) {
+        struct v4l2_buffer buf;
+
+        CLEAR (buf);
+
+        buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory      = V4L2_MEMORY_MMAP;
+        buf.index       = n_buffers;
+
+        if (-1 == xioctl (fd, VIDIOC_QUERYBUF, &buf))
+            errno_exit ("VIDIOC_QUERYBUF");
+
+        buffers[n_buffers].length = buf.length;
+        buffers[n_buffers].start =
+            mmap (NULL /* start anywhere */,
+                  buf.length,
+                  PROT_READ | PROT_WRITE /* required */,
+                  MAP_SHARED /* recommended */,
+                  fd, buf.m.offset);
+
+        if (MAP_FAILED == buffers[n_buffers].start)
+            errno_exit ("mmap");
+    }
+}
+
+void MmapImageTranscriber::init_userp (unsigned int buffer_size){
+    struct v4l2_requestbuffers req;
+    unsigned int page_size;
+
+    page_size = getpagesize ();
+    buffer_size = (buffer_size + page_size - 1) & ~(page_size - 1);
+
+    CLEAR (req);
+
+    req.count               = 4;
+    req.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.memory              = V4L2_MEMORY_USERPTR;
+
+    if (-1 == xioctl (fd, VIDIOC_REQBUFS, &req)) {
+        if (EINVAL == errno) {
+            fprintf (stderr, "%s does not support "
+                     "user pointer i/o\n", dev_name);
+            exit (EXIT_FAILURE);
+        } else {
+            errno_exit ("VIDIOC_REQBUFS");
+        }
+    }
+
+    buffers = static_cast<buffer*>(calloc (4, sizeof (*buffers)));
+
+    if (!buffers) {
+        fprintf (stderr, "Out of memory\n");
+        exit (EXIT_FAILURE);
+    }
+
+    for (n_buffers = 0; n_buffers < 4; ++n_buffers) {
+        buffers[n_buffers].length = buffer_size;
+        buffers[n_buffers].start = memalign (/* boundary */ page_size,
+                                             buffer_size);
+
+        if (!buffers[n_buffers].start) {
+            fprintf (stderr, "Out of memory\n");
+            exit (EXIT_FAILURE);
+        }
+    }
+}
+
+void MmapImageTranscriber::init_device (void){
+    struct v4l2_capability cap;
+    struct v4l2_cropcap cropcap;
+    struct v4l2_crop crop;
+    struct v4l2_format fmt;
+    unsigned int min;
+
+    if (-1 == xioctl (fd, VIDIOC_QUERYCAP, &cap)) {
+        if (EINVAL == errno) {
+            fprintf (stderr, "%s is no V4L2 device\n",
+                     dev_name);
+            exit (EXIT_FAILURE);
+        } else {
+            errno_exit ("VIDIOC_QUERYCAP");
+        }
+    }
+
+    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
+        fprintf (stderr, "%s is no video capture device\n",
+                 dev_name);
+        exit (EXIT_FAILURE);
+    }
+
+    switch (io) {
+    case IO_METHOD_READ:
+        if (!(cap.capabilities & V4L2_CAP_READWRITE)) {
+            fprintf (stderr, "%s does not support read i/o\n",
+                     dev_name);
+            exit (EXIT_FAILURE);
+        }
+
+        break;
+
+    case IO_METHOD_MMAP:
+    case IO_METHOD_USERPTR:
+        if (!(cap.capabilities & V4L2_CAP_STREAMING)) {
+            fprintf (stderr, "%s does not support streaming i/o\n",
+                     dev_name);
+            exit (EXIT_FAILURE);
+        }
+
+        break;
+    }
+
+    /* Select video input, video standard and tune here. */
+
+    CLEAR (cropcap);
+
+    cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    if (0 == xioctl (fd, VIDIOC_CROPCAP, &cropcap)) {
+        crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        crop.c = cropcap.defrect; /* reset to default */
+
+        if (-1 == xioctl (fd, VIDIOC_S_CROP, &crop)) {
+            switch (errno) {
+            case EINVAL:
+                /* Cropping not supported. */
+                break;
+            default:
+                /* Errors ignored. */
+                break;
+            }
+        }
+    } else {
+        /* Errors ignored. */
+    }
+
+
+    CLEAR (fmt);
+
+    fmt.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    fmt.fmt.pix.width       = IMAGE_HEIGHT;//640;
+    fmt.fmt.pix.height      = IMAGE_WIDTH;//480;
+    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+    fmt.fmt.pix.field       = V4L2_FIELD_INTERLACED;
+
+    if (-1 == xioctl (fd, VIDIOC_S_FMT, &fmt))
+        errno_exit ("VIDIOC_S_FMT");
+
+    /* Note VIDIOC_S_FMT may change width and height. */
+
+    /* Buggy driver paranoia. */
+    min = fmt.fmt.pix.width * 2;
+    if (fmt.fmt.pix.bytesperline < min)
+        fmt.fmt.pix.bytesperline = min;
+    min = fmt.fmt.pix.bytesperline * fmt.fmt.pix.height;
+    if (fmt.fmt.pix.sizeimage < min)
+        fmt.fmt.pix.sizeimage = min;
+
+    switch (io) {
+    case IO_METHOD_READ:
+        init_read (fmt.fmt.pix.sizeimage);
+        break;
+
+    case IO_METHOD_MMAP:
+        init_mmap ();
+        break;
+
+    case IO_METHOD_USERPTR:
+        init_userp (fmt.fmt.pix.sizeimage);
+        break;
+    }
+}
+
+void MmapImageTranscriber::uninit_device (void){
+    unsigned int i;
+
+    switch (io) {
+    case IO_METHOD_READ:
+        free (buffers[0].start);
+        break;
+
+    case IO_METHOD_MMAP:
+        for (i = 0; i < n_buffers; ++i)
+            if (-1 == munmap (buffers[i].start, buffers[i].length))
+                errno_exit ("munmap");
+        break;
+
+    case IO_METHOD_USERPTR:
+        for (i = 0; i < n_buffers; ++i)
+            free (buffers[i].start);
+        break;
+    }
+
+    free (buffers);
+}
+
+bool MmapImageTranscriber::open_device (void){
+    struct stat st;
+
+    if (-1 == stat (dev_name, &st)) {
+        fprintf (stderr, "Cannot identify '%s': %d, %s\n",
+                 dev_name, errno, strerror (errno));
+        return false;
+    }
+
+    if (!S_ISCHR (st.st_mode)) {
+        fprintf (stderr, "%s is no device\n", dev_name);
+        return false;
+    }
+
+    fd = open (dev_name, O_RDWR /* required */ | O_NONBLOCK, 0);
+
+    if (-1 == fd) {
+        fprintf (stderr, "Cannot open '%s': %d, %s\n",
+                 dev_name, errno, strerror (errno));
         return false;
     }
 
     return true;
 }
 
-void MmapImageTranscriber::initializeBuffers(){
+void MmapImageTranscriber::close_device (void){
+    if (-1 == close (fd))
+        errno_exit ("close");
 
-    // setup memory map
-    v4l2_requestbuffers reqbuf;
-    memset (&reqbuf, 0, sizeof (reqbuf));
-    reqbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    reqbuf.memory = V4L2_MEMORY_MMAP;
-    reqbuf.count = REQUIRED_BUFFERS;
-
-    if (-1 == xioctl (sd, VIDIOC_REQBUFS, &reqbuf)) {
-        if (errno == EINVAL)
-            printf ("Video capturing or mmap-streaming is not supported\n");
-        else
-            perror ("VIDIOC_REQBUFS");
-
-        exit (EXIT_FAILURE);
-    }
-    std::cout << "count: " << reqbuf.count << std::endl;
-
-    // zero initialize buffers array
-    memset (&buffers, 0, sizeof (buffers));
-
-    for (unsigned int i = 0; i < reqbuf.count; ++i) {
-        v4l2_buffer buffer;
-
-        memset (&buffer, 0, sizeof (buffer));
-        buffer.type = reqbuf.type;
-        buffer.memory = reqbuf.memory;
-        buffer.index = i;
-
-        if (-1 == xioctl (sd, VIDIOC_QUERYBUF, &buffer)) {
-            perror ("VIDIOC_QUERYBUF");
-            exit (EXIT_FAILURE);
-        }
-
-        buffers[i].length = buffer.length; /* remember for munmap() */
-
-        buffers[i].start = static_cast<unsigned char*>
-            (mmap (NULL,
-                   buffer.length,
-                   PROT_READ | PROT_WRITE, /* recommended */
-                   MAP_PRIVATE,             /* recommended */
-                   sd, buffer.m.offset));
-
-        if (MAP_FAILED == buffers[i].start) {
-            /* If you do not exit here you should unmap() and free()
-               the buffers mapped so far. */
-            perror ("mmap");
-            exit (EXIT_FAILURE);
-        }
-    }
+    fd = -1;
 }
 
-void MmapImageTranscriber::initCameraSettings(){
-    // // set priority of this to highest
-    // v4l2_priority p;
-    // memset(&p, 0, sizeof(p));
-    // if (0 > xioctl(sd, VIDIOC_G_PRIORITY, &p)){
-    //     log->error("MmapImageTranscriber", "getting priority failed ");
-    // }
-    // if (p != V4L2_PRIORITY_RECORD){
-    //     // throws error is it's already set to highest
-    //     if (0 > xioctl(sd, VIDIOC_S_PRIORITY, &p)){
-    //         log->error("MmapImageTranscriber", "setting priority failed ");
-    //     }
-    // }
+void MmapImageTranscriber::errno_exit (const char * s){
+    fprintf (stderr, "%s error %d, %s\n",
+             s, errno, strerror (errno));
 
-    // set video type (VGA, QVGA)
-    v4l2_std_id std_id = (v4l2_std_id)esid0;
-    std_id = (v4l2_std_id)0x04000000; /*QVGA*/
-    if (-1 == xioctl (sd, VIDIOC_S_STD, &std_id)) {
-        perror ("VIDIOC_S_STD");
-    }
-
-    // set video size and pixel format
-    v4l2_format fmt0;
-    memset( &fmt0, 0, sizeof( fmt0 ) );
-    fmt0.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    fmt0.fmt.pix.field = V4L2_FIELD_NONE;
-    //fmt0.fmt.pix.width       = 320;
-    //fmt0.fmt.pix.height      = 240;
-
-    fmt0.fmt.pix.width = NAO_IMAGE_WIDTH;
-    fmt0.fmt.pix.height = NAO_IMAGE_HEIGHT;
-    fmt0.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
-
-    if (0 != xioctl( sd, VIDIOC_S_FMT, &fmt0 )){
-        log->error("MmapImageTranscriber", "failed to set video format");
-    }
-    std::cout << fmt0.fmt.pix.sizeimage << std::endl;
-    v4l2_cropcap cropcap;
-    memset(&cropcap, 0, sizeof(cropcap));
-    cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-
-    if (0 == xioctl (sd, VIDIOC_CROPCAP, &cropcap)) {
-        v4l2_crop crop;
-        memset(&crop, 0, sizeof(crop));
-        crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        crop.c = cropcap.defrect; /* reset to default */
-
-        if (-1 == xioctl (sd, VIDIOC_S_CROP, &crop)) {
-            log->error("MmapImageTranscriber", "error setting cropping");
-        }
-    }
-    else {
-        log->error("MmapImageTranscriber", "error getting crop info");
-    }
-
-    v4l2_streamparm param;
-    memset (&param, 0, sizeof(param));
-    param.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    // get current streaming param
-    if (0 > xioctl(sd, VIDIOC_G_PARM, &param)){
-        log->error("MmapImageTranscriber", "getting streaming param failed");
-    }
-
-    // reset to what we want
-    param.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    param.parm.capture.timeperframe.numerator = 1.;
-    param.parm.capture.timeperframe.denominator = 10.;//VISION_FPS;
-    param.parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
-
-    // set driver to only capture at 30 fps, saving overhead
-    if (0 > xioctl(sd, VIDIOC_S_PARM, &param)){
-        log->error("MmapImageTranscriber", "setting streaming param failed");
-    }
+    exit (EXIT_FAILURE);
 }
 
-void MmapImageTranscriber::waitForImage (){
-    // backup last_frame here, so we can enqueue it after we're done w/it
-    // std::cout << "last index: " << last_frame.index << std::endl;
-    // std::cout << "cur index: " << current_frame.index << std::endl;
-    // last_frame = current_frame;
-    if (0 > xioctl(sd, VIDIOC_QBUF, &current_frame)){
-       perror("VIDIOC_QBUF");
-    }
+int MmapImageTranscriber::xioctl (int fd, int request, void * arg){
+    int r;
 
-    std::cout << "cur index: " << current_frame.index << std::endl;
-    memset(&current_frame, 0, sizeof(current_frame));
-    current_frame.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    current_frame.memory = V4L2_MEMORY_MMAP;
+    do r = ioctl (fd, request, arg);
+    while (-1 == r && EINTR == errno);
 
-    // this function blocks until frame is available
-    // if (0 > xioctl(sd, VIDIOC_DQBUF, &current_frame)){
-    //     log->error("MmapImageTranscriber", "could not get frame");
-    // }
-
-    if (0 >= xioctl (sd, VIDIOC_DQBUF, &current_frame)) {
-        switch (errno) {
-        case EAGAIN:
-            perror ("VIDIOC_DQBUF_EAGAIN");
-
-        case EIO:
-            /* Could ignore EIO, see spec. */
-
-            /* fall through */
-
-        default:
-            perror ("VIDIOC_DQBUF");
-        }
-    }
-
-    assert (current_frame.index < REQUIRED_BUFFERS);
-    // Update Sensors image pointer
-    sensors->lockImage();
-    // image is an unsigned char *
-    sensors->setImage(buffers[current_frame.index].start);
-    std::cout << "length: " << buffers[current_frame.index].length << std::endl;
-    std::cout << "bytes used: " << current_frame.bytesused << std::endl;
-    std::cout << "nao_img_byte_size: " << NAO_IMAGE_BYTE_SIZE << std::endl;
-    std::cout << "flags: " << current_frame.flags << std::endl;
-    sensors->releaseImage();
-    //std::cout << "last index: " << last_frame.index << std::endl;
-    std::cout << "cur index: " << current_frame.index << std::endl;
-
-    // enqueue old buffer for reuse
-    //memset(&last_frame, 0, sizeof(last_frame));
-    // last_frame.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    // last_frame.memory = V4L2_MEMORY_MMAP;
-}
-
-
-void MmapImageTranscriber::releaseImage(){
+    return r;
 }
