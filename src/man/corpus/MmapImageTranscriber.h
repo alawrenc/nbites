@@ -52,12 +52,9 @@ class MmapImageTranscriber : public ThreadedImageTranscriber {
     AL::ALPtr<AL::ALLoggerProxy> log;
     bool camera_active;
 
-    // Keep a local copy of the image because accessing the one from NaoQi is
-    // from the kernel and thus very slow.
-    unsigned char *image;
     static const unsigned int REQUIRED_BUFFERS = 4;
     struct image_buffer{
-        void *start;
+        unsigned char *start;
         size_t length;
     };
     image_buffer buffers [REQUIRED_BUFFERS];
