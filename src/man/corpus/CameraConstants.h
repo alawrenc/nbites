@@ -1,5 +1,7 @@
 #ifndef CAMERA_CONSTANTS_H
 #define CAMERA_CONSTANS_H
+
+#include "VisionDef.h"
 /*
 Camera setting constants fro use by image transcribers
  */
