@@ -13,6 +13,21 @@ using boost::shared_ptr;
 using namespace AL;
 
 #define CLEAR(x) memset (&(x), 0, sizeof (x))
+/**
+ * These adresses, commands and flags are given to us by aldeberan. They enable
+ * talking to and controlling the camera controller
+ * I2C_DEVICE       - the i2c bus that the camera controller resides on
+ * I2C_SLAVE        - the flag to indicate slave mode on the i2c bus. allows
+ *                    writing to the camera controller
+ * DSPIC_I2C_ADDR   - the address of the camera controller on the i2c bus
+ * DSPIC_SWITCH_REG - register of the active camera. can be read to determine
+ *                    camera or set to change camera.
+ *                    currently 0x01 is top camera and 0x02 is bottom.
+ */
+#define I2C_DEVICE "/dev/i2c-0"
+#define I2C_SLAVE 0x0703
+#define DSPIC_I2C_ADDR 0x8
+#define DSPIC_SWITCH_REG 220
 
 void MmapImageTranscriber::process_image (const void * p){
     fputc ('.', stdout);
@@ -36,15 +51,16 @@ MmapImageTranscriber::MmapImageTranscriber(shared_ptr<Synchro> synchro,
     }
 
 #ifdef USE_VISION
+    init_cameras();
     if (open_device()){
         camera_active = true;
         init_device();
-        start_capturing();
     }
     else {
         camera_active = false;
         std::cout << "\tCamera is inactive!" << std::endl;
     }
+
 #endif
 }
 
@@ -53,6 +69,7 @@ MmapImageTranscriber::~MmapImageTranscriber() {
         stop_capturing();
         uninit_device();
         close_device();
+        close_i2c();
     }
 }
 
@@ -84,12 +101,12 @@ void MmapImageTranscriber::run() {
             }
 
             if (0 == r) {
-                fprintf (stderr, "select timeout\n");
-                exit (EXIT_FAILURE);
+                fprintf (stdout, "select timeout\n");
             }
 
-            if (read_frame ())
-                break;
+            if (read_frame ()){
+
+            }
         }
 
     }
@@ -98,6 +115,21 @@ void MmapImageTranscriber::run() {
 }
 
 int MmapImageTranscriber::start() {
+#ifdef USE_VISION
+    if(!camera_active) {
+        if (open_device()){
+            camera_active = true;
+            init_device();
+        }
+        else {
+            camera_active = false;
+            std::cout << "\tCamera is inactive!" << std::endl;
+        }
+    }
+
+    start_capturing();
+#endif
+
     return Thread::start();
 }
 
@@ -109,6 +141,7 @@ void MmapImageTranscriber::stop() {
         stop_capturing();
         uninit_device();
         close_device();
+        close_i2c();
     }
 
 #endif
@@ -287,16 +320,14 @@ void MmapImageTranscriber::init_read (unsigned int buffer_size){
     buffers = static_cast<buffer*>(calloc (1, sizeof (*buffers)));
 
     if (!buffers) {
-        fprintf (stderr, "Out of memory\n");
-        exit (EXIT_FAILURE);
+        fprintf (stdout, "Out of memory\n");
     }
 
     buffers[0].length = buffer_size;
     buffers[0].start = malloc (buffer_size);
 
     if (!buffers[0].start) {
-        fprintf (stderr, "Out of memory\n");
-        exit (EXIT_FAILURE);
+        fprintf (stdout, "Out of memory\n");
     }
 }
 
@@ -311,25 +342,22 @@ void MmapImageTranscriber::init_mmap (void){
 
     if (-1 == xioctl (fd, VIDIOC_REQBUFS, &req)) {
         if (EINVAL == errno) {
-            fprintf (stderr, "%s does not support "
+            fprintf (stdout, "%s does not support "
                      "memory mapping\n", dev_name);
-            exit (EXIT_FAILURE);
         } else {
             errno_exit ("VIDIOC_REQBUFS");
         }
     }
 
     if (req.count < 2) {
-        fprintf (stderr, "Insufficient buffer memory on %s\n",
+        fprintf (stdout, "Insufficient buffer memory on %s\n",
                  dev_name);
-        exit (EXIT_FAILURE);
     }
 
     buffers = static_cast<buffer*>(calloc (req.count, sizeof (*buffers)));
 
     if (!buffers) {
-        fprintf (stderr, "Out of memory\n");
-        exit (EXIT_FAILURE);
+        fprintf (stdout, "Out of memory\n");
     }
 
     for (n_buffers = 0; n_buffers < req.count; ++n_buffers) {
@@ -372,9 +400,8 @@ void MmapImageTranscriber::init_userp (unsigned int buffer_size){
 
     if (-1 == xioctl (fd, VIDIOC_REQBUFS, &req)) {
         if (EINVAL == errno) {
-            fprintf (stderr, "%s does not support "
+            fprintf (stdout, "%s does not support "
                      "user pointer i/o\n", dev_name);
-            exit (EXIT_FAILURE);
         } else {
             errno_exit ("VIDIOC_REQBUFS");
         }
@@ -383,8 +410,7 @@ void MmapImageTranscriber::init_userp (unsigned int buffer_size){
     buffers = static_cast<buffer*>(calloc (4, sizeof (*buffers)));
 
     if (!buffers) {
-        fprintf (stderr, "Out of memory\n");
-        exit (EXIT_FAILURE);
+        fprintf (stdout, "Out of memory\n");
     }
 
     for (n_buffers = 0; n_buffers < 4; ++n_buffers) {
@@ -393,8 +419,7 @@ void MmapImageTranscriber::init_userp (unsigned int buffer_size){
                                              buffer_size);
 
         if (!buffers[n_buffers].start) {
-            fprintf (stderr, "Out of memory\n");
-            exit (EXIT_FAILURE);
+            fprintf (stdout, "Out of memory\n");
         }
     }
 }
@@ -405,29 +430,26 @@ void MmapImageTranscriber::init_device (void){
     struct v4l2_crop crop;
     struct v4l2_format fmt;
     unsigned int min;
-
+    std::cout << "init'ing device" << std::endl;
     if (-1 == xioctl (fd, VIDIOC_QUERYCAP, &cap)) {
         if (EINVAL == errno) {
-            fprintf (stderr, "%s is no V4L2 device\n",
+            fprintf (stdout, "%s is no V4L2 device\n",
                      dev_name);
-            exit (EXIT_FAILURE);
         } else {
             errno_exit ("VIDIOC_QUERYCAP");
         }
     }
 
     if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
-        fprintf (stderr, "%s is no video capture device\n",
+        fprintf (stdout, "%s is no video capture device\n",
                  dev_name);
-        exit (EXIT_FAILURE);
     }
 
     switch (io) {
     case IO_METHOD_READ:
         if (!(cap.capabilities & V4L2_CAP_READWRITE)) {
-            fprintf (stderr, "%s does not support read i/o\n",
+            fprintf (stdout, "%s does not support read i/o\n",
                      dev_name);
-            exit (EXIT_FAILURE);
         }
 
         break;
@@ -435,15 +457,41 @@ void MmapImageTranscriber::init_device (void){
     case IO_METHOD_MMAP:
     case IO_METHOD_USERPTR:
         if (!(cap.capabilities & V4L2_CAP_STREAMING)) {
-            fprintf (stderr, "%s does not support streaming i/o\n",
+            fprintf (stdout, "%s does not support streaming i/o\n",
                      dev_name);
-            exit (EXIT_FAILURE);
         }
 
         break;
     }
 
     /* Select video input, video standard and tune here. */
+    // GET video device information
+    v4l2_std_id esid = esid0;
+    if ( ioctl( fd, VIDIOC_S_FMT, &esid )) {
+        errno_exit ("VIDIOC_S_FMT");
+    }
+
+    CLEAR (fmt);
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    fmt.fmt.pix.field = V4L2_FIELD_ANY;
+    fmt.fmt.pix.width = NAO_IMAGE_HEIGHT;
+    fmt.fmt.pix.height = NAO_IMAGE_WIDTH;
+    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+
+    if (-1 == ioctl (fd, VIDIOC_S_FMT, &fmt)){
+        errno_exit ("VIDIOC_S_FMT");
+        exit (EXIT_FAILURE);
+    }
+
+    /* Note VIDIOC_S_FMT may change width and height. */
+
+    /* Buggy driver paranoia. */
+    min = fmt.fmt.pix.width * 2;
+    if (fmt.fmt.pix.bytesperline < min)
+        fmt.fmt.pix.bytesperline = min;
+    min = fmt.fmt.pix.bytesperline * fmt.fmt.pix.height;
+    if (fmt.fmt.pix.sizeimage < min)
+        fmt.fmt.pix.sizeimage = min;
 
     CLEAR (cropcap);
 
@@ -452,6 +500,12 @@ void MmapImageTranscriber::init_device (void){
     if (0 == xioctl (fd, VIDIOC_CROPCAP, &cropcap)) {
         crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         crop.c = cropcap.defrect; /* reset to default */
+        crop.c.width = NAO_IMAGE_WIDTH;
+        crop.c.height = NAO_IMAGE_HEIGHT;
+        std::cout << "width: " << crop.c.width << std::endl;
+        std::cout << "height: " << crop.c.height << std::endl;
+        std::cout << "left: " << crop.c.left << std::endl;
+        std::cout << "top: " << crop.c.top << std::endl;
 
         if (-1 == xioctl (fd, VIDIOC_S_CROP, &crop)) {
             switch (errno) {
@@ -467,27 +521,21 @@ void MmapImageTranscriber::init_device (void){
         /* Errors ignored. */
     }
 
+    // set fps
+    struct v4l2_streamparm parm;
+    parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-    CLEAR (fmt);
+    if( 0 != xioctl(fd, VIDIOC_G_PARM, &parm)){
+        perror("VIDIO_G_PARM");
+    }
 
-    fmt.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    fmt.fmt.pix.width       = IMAGE_HEIGHT;//640;
-    fmt.fmt.pix.height      = IMAGE_WIDTH;//480;
-    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
-    fmt.fmt.pix.field       = V4L2_FIELD_INTERLACED;
+    parm.parm.capture.timeperframe.numerator = 1;
+    parm.parm.capture.timeperframe.denominator = VISION_FPS;
+    parm.parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
+    if (0 > xioctl(fd, VIDIOC_S_PARM, &parm)){
+        perror("VIDIO_G_PARM");
+    }
 
-    if (-1 == xioctl (fd, VIDIOC_S_FMT, &fmt))
-        errno_exit ("VIDIOC_S_FMT");
-
-    /* Note VIDIOC_S_FMT may change width and height. */
-
-    /* Buggy driver paranoia. */
-    min = fmt.fmt.pix.width * 2;
-    if (fmt.fmt.pix.bytesperline < min)
-        fmt.fmt.pix.bytesperline = min;
-    min = fmt.fmt.pix.bytesperline * fmt.fmt.pix.height;
-    if (fmt.fmt.pix.sizeimage < min)
-        fmt.fmt.pix.sizeimage = min;
 
     switch (io) {
     case IO_METHOD_READ:
@@ -529,22 +577,23 @@ void MmapImageTranscriber::uninit_device (void){
 
 bool MmapImageTranscriber::open_device (void){
     struct stat st;
-
+    std::cout<<"opening device" << std::endl;
     if (-1 == stat (dev_name, &st)) {
-        fprintf (stderr, "Cannot identify '%s': %d, %s\n",
+        fprintf (stdout, "Cannot identify '%s': %d, %s\n",
                  dev_name, errno, strerror (errno));
         return false;
     }
 
     if (!S_ISCHR (st.st_mode)) {
-        fprintf (stderr, "%s is no device\n", dev_name);
+        fprintf (stdout, "%s is no device\n", dev_name);
         return false;
     }
 
     fd = open (dev_name, O_RDWR /* required */ | O_NONBLOCK, 0);
+    //fd = open (dev_name, O_RDWR /* required */, 0);
 
     if (-1 == fd) {
-        fprintf (stderr, "Cannot open '%s': %d, %s\n",
+        fprintf (stdout, "Cannot open '%s': %d, %s\n",
                  dev_name, errno, strerror (errno));
         return false;
     }
@@ -559,11 +608,54 @@ void MmapImageTranscriber::close_device (void){
     fd = -1;
 }
 
-void MmapImageTranscriber::errno_exit (const char * s){
-    fprintf (stderr, "%s error %d, %s\n",
-             s, errno, strerror (errno));
+bool MmapImageTranscriber::open_i2c (void){
+    i2cBus = open("/dev/i2c-0", O_RDWR);
+    if (-1 == i2cBus){
+        return false;
+    }
+    return true;
+}
 
-    exit (EXIT_FAILURE);
+void MmapImageTranscriber::close_i2c (void){
+    close (i2cBus);
+    i2cBus = -1;
+}
+
+void MmapImageTranscriber::init_cameras (void) {
+    open_i2c();
+    set_camera_top();
+    set_camera_bottom();
+    close_i2c();
+}
+
+void MmapImageTranscriber::set_camera_bottom (void){
+    if( 0 > ioctl( i2cBus, I2C_SLAVE, DSPIC_I2C_ADDR) ) {
+        std::cout << " : Can't connect I2C to dsPIC" << std::endl;
+    }
+
+    static unsigned char cmd [2] = {0, 0};
+    cmd[0] = 0x02;
+    if( 0 > i2c_smbus_write_block_data(i2cBus, DSPIC_SWITCH_REG, 1, cmd)){
+        std::cout << "error setting bottom camera" << std::endl;
+    }
+}
+
+void MmapImageTranscriber::set_camera_top (void){
+    if( 0 > ioctl( i2cBus, I2C_SLAVE, DSPIC_I2C_ADDR) ) {
+        std::cout << " : Can't connect I2C to dsPIC" << std::endl;
+    }
+
+    static unsigned char cmd [2] = {0, 0};
+    cmd[0] = 0x01;
+    if( 0 > i2c_smbus_write_block_data(i2cBus, DSPIC_SWITCH_REG, 1, cmd)){
+        std::cout << "error setting top camera" << std::endl;
+    }
+}
+
+void MmapImageTranscriber::errno_exit (const char * s){
+    fprintf (stdout, "%s error %d, %s\n",
+             s, errno, strerror (errno));
+    fflush(stdout);
 }
 
 int MmapImageTranscriber::xioctl (int fd, int request, void * arg){
@@ -573,4 +665,7 @@ int MmapImageTranscriber::xioctl (int fd, int request, void * arg){
     while (-1 == r && EINTR == errno);
 
     return r;
+}
+
+void MmapImageTranscriber::releaseImage(void){
 }

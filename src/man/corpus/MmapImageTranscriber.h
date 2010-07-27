@@ -8,7 +8,8 @@
 
 #include "ThreadedImageTranscriber.h"
 #include "synchro.h"
-#include <linux/videodev2.h>
+#include "linux/videodev2.h"
+#include "bn/i2c/i2c-dev.h"
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -34,10 +35,10 @@ class MmapImageTranscriber : public ThreadedImageTranscriber {
     int start();
     void run();
     void stop();
-    void releaseImage() {};
+    void releaseImage();
 
  private: // helper methods
-    void errno_exit(const char * s);
+
     void process_image(const void * p);
     void start_capturing();
     void stop_capturing();
@@ -49,6 +50,12 @@ class MmapImageTranscriber : public ThreadedImageTranscriber {
     void uninit_device();
     bool open_device();
     void close_device();
+    bool open_i2c();
+    void close_i2c();
+    void init_cameras();
+    void set_camera_bottom();
+    void set_camera_top();
+    void errno_exit(const char * s);
     int xioctl (int fd, int request, void * arg);
 
  private: // member variables
@@ -65,6 +72,7 @@ class MmapImageTranscriber : public ThreadedImageTranscriber {
 
     char * dev_name;
     int fd;
+    int i2cBus;
     buffer * buffers;
     unsigned int n_buffers;
 
