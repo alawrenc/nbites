@@ -12,6 +12,16 @@
 using boost::shared_ptr;
 using namespace AL;
 
+#define NUM_CONTROLS 8
+__u32 controlIds[NUM_CONTROLS] =
+    {V4L2_CID_BRIGHTNESS, V4L2_CID_CONTRAST, V4L2_CID_RED_BALANCE,
+     V4L2_CID_BLUE_BALANCE, V4L2_CID_GAIN, V4L2_CID_EXPOSURE,
+     V4L2_CID_HFLIP, V4L2_CID_VFLIP};
+__s32 controlValues_dark[2][NUM_CONTROLS] =
+    {{ 100, 75, 128, 128, 128, 5, false, false},
+     { 100, 75, 128, 128, 128, 5, false, false}};
+__s32 (*controlValues)[NUM_CONTROLS] = controlValues_dark;
+
 #define CLEAR(x) memset (&(x), 0, sizeof (x))
 /**
  * These adresses, commands and flags are given to us by aldeberan. They enable
@@ -467,8 +477,8 @@ void MmapImageTranscriber::init_device (void){
     /* Select video input, video standard and tune here. */
     // GET video device information
     v4l2_std_id esid = esid0;
-    if ( ioctl( fd, VIDIOC_S_FMT, &esid )) {
-        errno_exit ("VIDIOC_S_FMT");
+    if ( ioctl( fd, VIDIOC_S_STD, &esid )) {
+        errno_exit ("VIDIOC_S_STD");
     }
 
     CLEAR (fmt);
@@ -480,7 +490,7 @@ void MmapImageTranscriber::init_device (void){
 
     if (-1 == ioctl (fd, VIDIOC_S_FMT, &fmt)){
         errno_exit ("VIDIOC_S_FMT");
-        exit (EXIT_FAILURE);
+        // exit (EXIT_FAILURE);
     }
 
     /* Note VIDIOC_S_FMT may change width and height. */
@@ -589,7 +599,7 @@ bool MmapImageTranscriber::open_device (void){
         return false;
     }
 
-    fd = open (dev_name, O_RDWR /* required */ | O_NONBLOCK, 0);
+    fd = open (dev_name, O_RDWR /* required */ + O_NONBLOCK, 0);
     //fd = open (dev_name, O_RDWR /* required */, 0);
 
     if (-1 == fd) {
@@ -624,7 +634,9 @@ void MmapImageTranscriber::close_i2c (void){
 void MmapImageTranscriber::init_cameras (void) {
     open_i2c();
     set_camera_top();
+    setCameraSettings();
     set_camera_bottom();
+    setCameraSettings();
     close_i2c();
 }
 
@@ -650,6 +662,40 @@ void MmapImageTranscriber::set_camera_top (void){
     if( 0 > i2c_smbus_write_block_data(i2cBus, DSPIC_SWITCH_REG, 1, cmd)){
         std::cout << "error setting top camera" << std::endl;
     }
+}
+
+void MmapImageTranscriber::setCameraSettings(void) {
+    //struct v4l2_queryctrl queryctrl;
+    struct v4l2_control control;
+    CLEAR(control);
+
+    open_device();
+    /**
+     * macro to set a control on the camera.  reports errors but does not stop.
+     *
+     * @param controlId    the id of the control
+     * @param controlValue the value to set controlId to
+     */
+#define setControl(controlId, controlValue)                             \
+    {                                                                   \
+        control.id    = controlId;                                      \
+        control.value = controlValue;                                   \
+        if(-1 == ioctl (fd, VIDIOC_S_CTRL, &control) && errno != ERANGE){ \
+            errno_exit("set control error");                            \
+        }                                                               \
+    }
+
+    //setControl(V4L2_CID_SATURATION,         128);
+    setControl(V4L2_CID_HUE,                0);
+    setControl(V4L2_CID_AUDIO_MUTE,         false);//Auto Exposure
+    setControl(V4L2_CID_AUTO_WHITE_BALANCE, false);
+    //setControl(V4L2_CID_EXPOSURE,           504);
+    setControl(V4L2_CID_AUTOGAIN,           false);
+    for(unsigned int controlIndex = 0; controlIndex < NUM_CONTROLS;
+        ++controlIndex){
+        setControl(controlIds[controlIndex], controlValues[0][controlIndex]);
+    }
+    close_device();
 }
 
 void MmapImageTranscriber::errno_exit (const char * s){

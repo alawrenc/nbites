@@ -53,6 +53,7 @@ class MmapImageTranscriber : public ThreadedImageTranscriber {
     bool open_i2c();
     void close_i2c();
     void init_cameras();
+    void setCameraSettings();
     void set_camera_bottom();
     void set_camera_top();
     void errno_exit(const char * s);
