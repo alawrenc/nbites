@@ -18,7 +18,10 @@ __u32 controlIds[NUM_CONTROLS] =
      V4L2_CID_BLUE_BALANCE, V4L2_CID_GAIN, V4L2_CID_EXPOSURE,
      V4L2_CID_HFLIP, V4L2_CID_VFLIP};
 __s32 controlValues_dark[2][NUM_CONTROLS] =
-    {{ 100, 75, 128, 128, 128, 5, false, false},
+    {{ DEFAULT_CAMERA_BRIGHTNESS, DEFAULT_CAMERA_CONTRAST,
+       DEFAULT_CAMERA_REDCHROMA, DEFAULT_CAMERA_BLUECHROMA,
+       DEFAULT_CAMERA_GAIN, DEFAULT_CAMERA_EXPOSURE,
+       DEFAULT_CAMERA_HFLIP, DEFAULT_CAMERA_VFLIP},
      { 100, 75, 128, 128, 128, 5, false, false}};
 __s32 (*controlValues)[NUM_CONTROLS] = controlValues_dark;
 
@@ -40,8 +43,8 @@ __s32 (*controlValues)[NUM_CONTROLS] = controlValues_dark;
 #define DSPIC_SWITCH_REG 220
 
 void MmapImageTranscriber::process_image (const void * p){
-    fputc ('.', stdout);
-    fflush (stdout);
+    //fputc ('.', stdout);
+    //fflush (stdout);
     sensors->setImage(static_cast<const unsigned char*>(p));
 }
 
@@ -79,7 +82,6 @@ MmapImageTranscriber::~MmapImageTranscriber() {
         stop_capturing();
         uninit_device();
         close_device();
-        close_i2c();
     }
 }
 
@@ -114,8 +116,8 @@ void MmapImageTranscriber::run() {
                 fprintf (stdout, "select timeout\n");
             }
 
-            if (read_frame ()){
-
+            else if (read_frame ()){
+                subscriber->notifyNextVisionImage();
             }
         }
 
@@ -151,7 +153,6 @@ void MmapImageTranscriber::stop() {
         stop_capturing();
         uninit_device();
         close_device();
-        close_i2c();
     }
 
 #endif
@@ -233,7 +234,6 @@ void MmapImageTranscriber::stop_capturing() {
 }
 
 int MmapImageTranscriber::read_frame (void){
-    struct v4l2_buffer buf;
     unsigned int i;
 
     switch (io) {
@@ -258,12 +258,13 @@ int MmapImageTranscriber::read_frame (void){
         break;
 
     case IO_METHOD_MMAP:
-        CLEAR (buf);
+        last_buffer = current_buffer;
+        CLEAR (current_buffer);
 
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
+        current_buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        current_buffer.memory = V4L2_MEMORY_MMAP;
 
-        if (-1 == xioctl (fd, VIDIOC_DQBUF, &buf)) {
+        if (-1 == xioctl (fd, VIDIOC_DQBUF, &current_buffer)) {
             switch (errno) {
             case EAGAIN:
                 return 0;
@@ -278,22 +279,23 @@ int MmapImageTranscriber::read_frame (void){
             }
         }
 
-        assert (buf.index < n_buffers);
+        assert (current_buffer.index < n_buffers);
 
-        process_image (buffers[buf.index].start);
+        process_image (buffers[current_buffer.index].start);
 
-        if (-1 == xioctl (fd, VIDIOC_QBUF, &buf))
+        if (-1 == xioctl (fd, VIDIOC_QBUF, &last_buffer))
             errno_exit ("VIDIOC_QBUF");
 
         break;
 
     case IO_METHOD_USERPTR:
-        CLEAR (buf);
+        last_buffer = current_buffer;
+        CLEAR (current_buffer);
 
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_USERPTR;
+        current_buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        current_buffer.memory = V4L2_MEMORY_USERPTR;
 
-        if (-1 == xioctl (fd, VIDIOC_DQBUF, &buf)) {
+        if (-1 == xioctl (fd, VIDIOC_DQBUF, &current_buffer)) {
             switch (errno) {
             case EAGAIN:
                 return 0;
@@ -309,15 +311,15 @@ int MmapImageTranscriber::read_frame (void){
         }
 
         for (i = 0; i < n_buffers; ++i)
-            if (buf.m.userptr == (unsigned long) buffers[i].start
-                && buf.length == buffers[i].length)
+            if (current_buffer.m.userptr == (unsigned long) buffers[i].start
+                && current_buffer.length == buffers[i].length)
                 break;
 
         assert (i < n_buffers);
 
-        process_image ((void *) buf.m.userptr);
+        process_image ((void *) current_buffer.m.userptr);
 
-        if (-1 == xioctl (fd, VIDIOC_QBUF, &buf))
+        if (-1 == xioctl (fd, VIDIOC_QBUF, &last_buffer))
             errno_exit ("VIDIOC_QBUF");
 
         break;

@@ -76,6 +76,8 @@ class MmapImageTranscriber : public ThreadedImageTranscriber {
     int i2cBus;
     buffer * buffers;
     unsigned int n_buffers;
+    struct v4l2_buffer current_buffer;
+    struct v4l2_buffer last_buffer;
 
     typedef enum {
         IO_METHOD_READ,
