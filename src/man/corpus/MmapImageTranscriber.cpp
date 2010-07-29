@@ -175,9 +175,9 @@ void MmapImageTranscriber::start_capturing() {
 
             CLEAR (buf);
 
-            buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            buf.memory      = V4L2_MEMORY_MMAP;
-            buf.index       = i;
+            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            buf.memory = V4L2_MEMORY_MMAP;
+            buf.index = i;
 
             if (-1 == xioctl (fd, VIDIOC_QBUF, &buf))
                 errno_exit ("VIDIOC_QBUF");
@@ -191,21 +191,22 @@ void MmapImageTranscriber::start_capturing() {
         break;
 
     case IO_METHOD_USERPTR:
+        struct v4l2_buffer buf;
         for (i = 0; i < n_buffers; ++i) {
-            struct v4l2_buffer buf;
 
             CLEAR (buf);
 
-            buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            buf.memory      = V4L2_MEMORY_USERPTR;
-            buf.index       = i;
-            buf.m.userptr	= (unsigned long) buffers[i].start;
-            buf.length      = buffers[i].length;
+            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            buf.memory = V4L2_MEMORY_USERPTR;
+            buf.index = i;
+            buf.m.userptr = (unsigned long) buffers[i].start;
+            buf.length = buffers[i].length;
 
             if (-1 == xioctl (fd, VIDIOC_QBUF, &buf))
-                errno_exit ("VIDIOC_QBUF");
+                errno_exit ("VIDIOC_QBUF1");
         }
-
+        current_buffer = buf;
+        last_buffer = buf;
         type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
         if (-1 == xioctl (fd, VIDIOC_STREAMON, &type))
@@ -319,8 +320,9 @@ int MmapImageTranscriber::read_frame (void){
 
         process_image ((void *) current_buffer.m.userptr);
 
+        
         if (-1 == xioctl (fd, VIDIOC_QBUF, &last_buffer))
-            errno_exit ("VIDIOC_QBUF");
+            errno_exit ("VIDIOC_QBUF2");
 
         break;
     }
@@ -348,9 +350,9 @@ void MmapImageTranscriber::init_mmap (void){
 
     CLEAR (req);
 
-    req.count               = 4;
-    req.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    req.memory              = V4L2_MEMORY_MMAP;
+    req.count = 4;
+    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.memory = V4L2_MEMORY_MMAP;
 
     if (-1 == xioctl (fd, VIDIOC_REQBUFS, &req)) {
         if (EINVAL == errno) {
@@ -377,9 +379,9 @@ void MmapImageTranscriber::init_mmap (void){
 
         CLEAR (buf);
 
-        buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory      = V4L2_MEMORY_MMAP;
-        buf.index       = n_buffers;
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = n_buffers;
 
         if (-1 == xioctl (fd, VIDIOC_QUERYBUF, &buf))
             errno_exit ("VIDIOC_QUERYBUF");
@@ -406,9 +408,9 @@ void MmapImageTranscriber::init_userp (unsigned int buffer_size){
 
     CLEAR (req);
 
-    req.count               = 4;
-    req.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    req.memory              = V4L2_MEMORY_USERPTR;
+    req.count = 4;
+    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.memory = V4L2_MEMORY_USERPTR;
 
     if (-1 == xioctl (fd, VIDIOC_REQBUFS, &req)) {
         if (EINVAL == errno) {
