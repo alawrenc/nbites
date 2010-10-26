@@ -233,27 +233,34 @@ int Ball::balls(int horizon, VisualBall *thisBall)
   estimate e; // pix estimate of ball's distance
 
   preScreenBlobsBasedOnSizeAndColor();
+
   // loop through the blobs from biggest to smallest until we find a ball
   do {
     topBlob = blobs->getTopAndMerge(horizon);
+
     // the conditions when we know we don't have a ball
     if (topBlob == NULL || !blobOk(*topBlob)) {
       return 0;
     }
+
     if (BALLDEBUG) {
       cout << endl << "Examining next top blob " << endl;
     }
+
     w = topBlob->width();
     h = topBlob->height();
+
     if (abs(w - h) > DIAMETERMISMATCH && !nearEdge(*topBlob)) {
       adjustBallDimensions();
       w = topBlob->width();
       h = topBlob->height();
     }
+
     const float BALL_REAL_HEIGHT = 6.5f;
     e = vision->pose->pixEstimate(topBlob->getLeftTopX() + (w / 2),
                                   topBlob->getLeftTopY() + 2 * h / PIX_EST_DIV,
                                   ORANGE_BALL_RADIUS);
+
     // SORT OUT BALL INFORMATION
     setOcclusionInformation();
     setBallInfo(w, h, thisBall, e);
@@ -263,12 +270,14 @@ int Ball::balls(int horizon, VisualBall *thisBall)
   if (ballIsClose(thisBall) && ballIsNotSquare(h, w)) {
     checkForReflections(h, w, thisBall, e);
   }
+
   if (BALLDEBUG) {
     cout << "Vision found ball " << endl;
     cout << topBlob->getLeftTopX() << " " << topBlob->getLeftTopY()
          << " " <<
       w << " " << h << " " << e.dist << endl;
   }
+
   if (BALLDISTDEBUG) {
     estimate es;
     es = vision->pose->pixEstimate(topBlob->getLeftTopX() + topBlob->width() /
@@ -312,26 +321,34 @@ int Ball::findBallEdgeX(int x, int y, int dir) {
   int midu = lastu;
   int newx = x;
   int changex = topBlob->getLeft();
+
   if (dir > 0) {
     changex = topBlob->getRight();
   }
+
   for (int i = -3; i < 4; i++) {
     newx = x;
+
     if (y + i >= 0 && y + i < IMAGE_HEIGHT) {
-      for (bool done = false; !done && newx >= 0 && newx < IMAGE_WIDTH;
-           newx+=dir) {
+
+      for ( ; newx >= 0 && newx < IMAGE_WIDTH; newx+=dir) {
         int newu = thresh->getU(newx, y + i);
+        lastu = newu;
+        newx+=dir;
+
         if (abs(newu - lastu) > EDGEMISMATCH
             || abs(newu - midu) > EDGECENTERMISMATCH) {
-          done = true;
+          break;
         }
-        lastu = newu;
       }
+
       if (dir < 0) {
         if (newx + dir < changex) {
           changex = newx + dir;
         }
-      } else {
+      }
+
+      else {
         if (newx + dir > changex) {
           changex = newx + dir;
         }
@@ -354,26 +371,33 @@ int Ball::findBallEdgeY(int x, int y, int dir) {
   int midu = lastu;
   int newy = y;
   int changey = topBlob->getTop();
+
   if (dir > 0) {
     changey = topBlob->getBottom();
   }
+
   for (int i = -3; i < 4; i++) {
     newy = y;
+
     if (x + i >= 0 && x + i < IMAGE_WIDTH) {
-      for (bool done = false; !done && newy >= 0 && newy < IMAGE_HEIGHT;
-           newy+=dir) {
+
+      for ( ; newy >= 0 && newy < IMAGE_HEIGHT; newy+=dir) {
         int newu = thresh->getU(x + i, newy);
+        lastu = newu;
+
         if (abs(newu - lastu) > EDGEMISMATCH
             || abs(newu - midu) > EDGECENTERMISMATCH) {
-          done = true;
+          break;
         }
-        lastu = newu;
       }
+
       if (dir < 0) {
         if (newy + dir < changey) {
           changey = newy + dir;
         }
-      } else {
+      }
+
+      else {
         if (newy + dir > changey) {
           changey = newy + dir;
         }
@@ -392,6 +416,7 @@ int Ball::findBallEdgeY(int x, int y, int dir) {
 void Ball::adjustBallDimensions() {
   int w = topBlob->width();
   int h = topBlob->height();
+
   if (w > h) {
     int x = topBlob->getLeft() + w / 2;
     int y = topBlob->getTop() + h / 5;
@@ -400,6 +425,7 @@ void Ball::adjustBallDimensions() {
     int newbottom = findBallEdgeY(x, y, 1);
     int change = topBlob->getTop() - newtop +
       newbottom - topBlob->getBottom();
+
     if (abs(change - (w - h)) < DIAMETERMISMATCH) {
       if (BALLDEBUG) {
         cout << "Adjusting height of blob" << endl;
@@ -407,7 +433,9 @@ void Ball::adjustBallDimensions() {
       topBlob->setTop(newtop);
       topBlob->setBottom(newbottom);
     }
-  } else {
+  }
+
+  else {
     int x = topBlob->getLeft() + w / 5;
     int y = topBlob->getTop() + h / 2;
     int newleft = findBallEdgeX(x, y, -1);
@@ -415,6 +443,7 @@ void Ball::adjustBallDimensions() {
     int newright = findBallEdgeX(x, y, 1);
     int change = newright - topBlob->getRight() +
       topBlob->getLeft() - newleft;
+
     if (abs(change - (h - w)) < DIAMETERMISMATCH) {
       if (BALLDEBUG) {
         cout << "Adjusting width of blob" << endl;
@@ -441,15 +470,22 @@ void Ball::checkForReflections(int h, int w, VisualBall * thisBall,
     cout << "Detected bad ball distance - trying to fix " << w <<
       " " << h << endl;
   }
+
   // generally the reflections are over or under the ball
   if (h > w) {
+
     // scan the sides to find the real sides
     int count = -2;
+
+    // TODO: investigate which array is more active. consider getting
+    // pointer to row inside of first for loop
     if (topBlob->getRightTopX() - h > 0) {
       for (int i = topBlob->getRightTopX() - h; i < IMAGE_WIDTH - 1;
            i++) {
+
         for (int j = topBlob->getLeftTopY();
              j < topBlob->getLeftBottomY(); j++) {
+
           if (thresh->thresholded[j][i] == ORANGE) {
             topBlob->setRightTopX(i);
             j = IMAGE_HEIGHT;
@@ -459,10 +495,14 @@ void Ball::checkForReflections(int h, int w, VisualBall * thisBall,
         count++;
       }
     }
+
     if (topBlob->getLeftTopX() + h < IMAGE_WIDTH) {
+
       for (int i = topBlob->getLeftTopX() + h; i > -1; i--) {
+
         for (int j = topBlob->getLeftTopY();
              j < topBlob->getLeftBottomY(); j++) {
+
           if (thresh->thresholded[j][i] == ORANGE) {
             topBlob->setRightTopX(i);
             j = IMAGE_HEIGHT;
@@ -472,6 +512,7 @@ void Ball::checkForReflections(int h, int w, VisualBall * thisBall,
         count++;
       }
     }
+
     if (count > 1) {
       if (BALLDISTDEBUG) {
         cout << "Resetting ball dimensions.	 Count was " << count
@@ -551,6 +592,7 @@ void Ball::newRun(int x, int y, int h)
 
   if (numberOfRuns < runsize) {
     int last = numberOfRuns - 1;
+
     // skip over noise --- jumps over two pixel noise currently.
     //HW--added CONSTANT for noise jumps.
     if (last > 0 && runs[last].x == x &&
@@ -559,7 +601,9 @@ void Ball::newRun(int x, int y, int h)
       runs[last].y = y; // reset the new y val
       h = runs[last].h;
       numberOfRuns--; // don't count this merge as a new run
-    } else {
+    }
+
+    else {
       runs[numberOfRuns].x = x;
       runs[numberOfRuns].y = y;
       runs[numberOfRuns].h = h;
@@ -570,11 +614,14 @@ void Ball::newRun(int x, int y, int h)
       maxOfBiggestRun = y;
       indexOfBiggestRun = numberOfRuns * RUN_VALUES;
     }
+
     if (y < maxHeight) { // we're counting backwards
       maxHeight = y;
     }
     numberOfRuns++;
-  }else{
+  }
+
+  else{
     if(color == ORANGE) {
       print("WARNING!!!: INSUFFICIENT MEMORY ALLOCATED ORANGE RUNS");
     }
@@ -613,9 +660,12 @@ float Ball::rightHalfColor(Blob tempobj)
   int spanX = tempobj.width();
   int good = 0, good1 = 0, good2 = 0;
   int pix;
+
   for (int i = spanY / 2; i < spanY; i++) {
+
     for (int j = 0; j < spanX; j++) {
       pix = thresh->thresholded[y + i][x + j];
+
       if (y + i > -1 && x + j > -1 && (y + i) < IMAGE_HEIGHT &&
           x + j < IMAGE_WIDTH && (pix == ORANGE || pix == ORANGERED ||
                                   pix == ORANGEYELLOW)) {
@@ -623,9 +673,12 @@ float Ball::rightHalfColor(Blob tempobj)
       }
     }
   }
+
   for (int i = 0; i < spanY; i++) {
+
     for (int j = 0; j < spanX / 2; j++) {
       pix = thresh->thresholded[y + i][x + j];
+
       if (y + i > -1 && x + j > -1 && (y + i) < IMAGE_HEIGHT &&
           x + j < IMAGE_WIDTH && (pix == ORANGE || pix == ORANGERED ||
                                   pix == ORANGEYELLOW)) {
@@ -633,9 +686,12 @@ float Ball::rightHalfColor(Blob tempobj)
       }
     }
   }
+
   for (int i = 0; i < spanY; i++) {
+
     for (int j = spanX / 2; j < spanX; j++) {
       pix = thresh->thresholded[y + i][x + j];
+
       if (y + i > -1 && x + j > -1 && (y + i) < IMAGE_HEIGHT &&
           x + j < IMAGE_WIDTH && (pix == ORANGE || pix == ORANGERED ||
                                   pix == ORANGEYELLOW)) {
@@ -643,12 +699,15 @@ float Ball::rightHalfColor(Blob tempobj)
       }
     }
   }
+
   if (BALLDEBUG) {
     cout << "Checking half color " << good << " " << good1 << " " <<
       good2 << " " << (spanX * spanY / 2) << endl;
   }
+
   float percent = (float)max(max(good, good1), good2) /
     (float) (spanX * spanY / 2);
+
   return percent;
 }
 
@@ -672,34 +731,53 @@ bool Ball::ballIsReasonablySquare(int x, int y, int w, int h) {
   if ((h < SMALLBALLDIM && w < SMALLBALLDIM && ratio > BALLTOOTHIN &&
        ratio < BALLTOOFAT)) {
     return true;
-  } else if (ratio > THINBALL && ratio < FATBALL) {
+  }
+
+  else if (ratio > THINBALL && ratio < FATBALL) {
     return true;
-  } else if (nearImageEdgeX(x, margin) || nearImageEdgeX(x+w, margin) ||
+  }
+
+  else if (nearImageEdgeX(x, margin) || nearImageEdgeX(x+w, margin) ||
              nearImageEdgeY(y, margin) || nearImageEdgeY(y+h, margin)) {
+
     bool nearX = nearImageEdgeX(x, margin) || nearImageEdgeX(x+w, margin);
     bool nearY = nearImageEdgeY(y, margin) || nearImageEdgeY(y+h, margin);
+
+    //TODO: oh my dear god, please refactor
     // we're on an edge so allow for streching
     if (h > BIG_ENOUGH && w > BIG_ENOUGH && nearY &&
         ratio < MIDFAT && ratio > 1) {
       return true;
       // then sides
-    } else if (h > BIG_ENOUGH && w > BIG_ENOUGH && nearX
+    }
+
+    else if (h > BIG_ENOUGH && w > BIG_ENOUGH && nearX
                && ratio > MIDTHIN && ratio < 1) {
       return true;
-    } else if (h > TOO_BIG_TO_CHECK && nearX && ratio > OCCLUDEDTHIN &&
+    }
+
+    else if (h > TOO_BIG_TO_CHECK && nearX && ratio > OCCLUDEDTHIN &&
                ratio < 1.0f) {
       return true;
-    } else if (w > TOO_BIG_TO_CHECK && nearY && ratio < OCCLUDEDFAT &&
+    }
+
+    else if (w > TOO_BIG_TO_CHECK && nearY && ratio < OCCLUDEDFAT &&
                ratio > 1.0f) {
       return true;
       // when we have big slivers then allow for extra
-    } else if (nearY && w > WIDTH_AT_SCREEN_BOTTOM) {
+    }
+
+    else if (nearY && w > WIDTH_AT_SCREEN_BOTTOM) {
       return true;
       // the bottom is a really special case
-    } else {
+    }
+
+    else {
       return false;
     }
-  } else {
+  }
+
+  else {
     return false;
   }
   return true;
@@ -743,19 +821,23 @@ bool Ball::nearImageEdgeY(int y, int margin) {
  * @return		 a constant result - BAD_VALUE, or 0 for round
  */
 
-int	 Ball::roundness(Blob b)
+int Ball::roundness(Blob b)
 {
   int w = b.width();
   int h = b.height();
+
   if (w * h > SMALLBALL) {
+
     // now make some scans through the blob - horizontal, vertical, diagonal
     pair<int, int> diagonal = scanDiagonalsForRoundnessInformation(b);
     pair<int, int> midlines = scanMidlinesForRoundnessInformation(b);
     int goodPix = diagonal.first + midlines.first;
     int badPix = diagonal.second + midlines.second;
+
     if (BALLDEBUG) {
       cout << "Roundness: Good " << goodPix << " " << badPix << endl;
     }
+
     // if more than 20% or so of our pixels tested are bad, then we toss it out
     if (goodPix < badPix * 5) {
       return BAD_VALUE;
@@ -882,53 +964,71 @@ bool Ball::badSurround(Blob b) {
   y = max(0, y - surround);
   w = w + surround * 2;
   h = h + surround * 2;
+
   for (int i = 0; i < w && x + i < IMAGE_WIDTH; i++) {
+
     for (int j = 0; j < h && y + j < IMAGE_HEIGHT; j++) {
       pix = thresh->thresholded[y + j][x + i];
+
       if (pix == ORANGE || pix == ORANGEYELLOW) {
         orange++;
+
         if (x + i >= b.getLeft() && x + i <= b.getRight() &&
             y + j >= b.getTop() && y + j <= b.getBottom()) {
           borange++;
         }
-      } else if (pix == RED) {
+      }
+
+      else if (pix == RED) {
         realred++;
-      } else if (pix == ORANGERED) {
+      }
+
+      else if (pix == ORANGERED) {
         red++;
-      } else if (pix == GREEN) {
+      }
+
+      else if (pix == GREEN) {
         greens++;
-      } else if (pix == YELLOW && j < surround) {
+      }
+
+      else if (pix == YELLOW && j < surround) {
         yellows++;
       }
     }
   }
+
   if (BALLDEBUG) {
     cout << "Surround information " << red << " " << realred << " "
          << orange << " " << borange << " " << greens << " "
          << yellows << endl;
   }
+
   if (realred > borange) {
     if (BALLDEBUG) {
       cout << "Too much real red" << endl;
     }
     return true;
   }
+
   if (realred > greens && w * h < 2000) {
     if (BALLDEBUG) {
       cout << "Too much real red versus green" << endl;
     }
     return true;
   }
+
   if (realred > borange && realred > orange) {
     if (BALLDEBUG) {
       cout << "Too much real red vs borange" << endl;
     }
     return true;
   }
+
   if (orange - borange > borange * 0.3 && orange - borange > 10) {
     if (BALLDEBUG) {
       cout << "Too much orange outside of the ball" << endl;
     }
+
     // We can run into this problem with reflections - let's see if
     // we're up against a post or something
     if (yellows > w * 3) {
@@ -940,6 +1040,7 @@ bool Ball::badSurround(Blob b) {
       return true;
     }
   }
+
   if ((red > orange) &&
       (static_cast<float>(greens) <
        (static_cast<float>(w * h) * GREEN_PERCENT))) {
@@ -948,13 +1049,16 @@ bool Ball::badSurround(Blob b) {
     }
     return true;
   }
+
   if (red > orange || (realred > greens && realred > 2 * w &&
                        realred > borange * 0.1))  {
     if (BALLDEBUG) {
       cout << "Too much real red - doing more checking" << endl;
     }
+
     x = b.getLeftTopX();
     y = b.getLeftBottomY();
+
     if (nearImageEdgeX(x, 2) || nearImageEdgeX(x+b.width(), 2) ||
         nearImageEdgeY(y, 2)) {
       if (BALLDEBUG) {
@@ -994,16 +1098,23 @@ void Ball::setBallInfo(int w, int h, VisualBall *thisBall, estimate e) {
   if (occlusion == LEFTOCCLUSION) {
     thisBall->setCenterX(topBlob->getRightTopX() - amount);
     thisBall->setX(topBlob->getRightTopX() - amount * 2);
-  } else {
+  }
+
+  else {
     thisBall->setCenterX(topBlob->getLeftTopX() + amount);
   }
+
   if (occlusion != TOPOCCLUSION) {
     thisBall->setCenterY(topBlob->getLeftTopY() + amount);
-  } else {
+  }
+
+  else {
     thisBall->setCenterY(topBlob->getLeftBottomY() - amount);
   }
+
   thisBall->setConfidence(SURE);
   thisBall->findAngles();
+
   if (occlusion == NOOCCLUSION) {
     thisBall->setFocalDistanceFromRadius();
     //trust pixest to within 300 cm
@@ -1017,7 +1128,9 @@ void Ball::setBallInfo(int w, int h, VisualBall *thisBall, estimate e) {
                                                                thisBall->getRadius(),
                                                                ORANGE_BALL_RADIUS));
     }
-  } else {
+  }
+
+  else {
     // user our super swell updated pix estimate to do the distance
     thisBall->setDistanceEst(e);
     if (BALLDISTDEBUG) {
@@ -1041,8 +1154,9 @@ void Ball::setBallInfo(int w, int h, VisualBall *thisBall, estimate e) {
  */
 bool Ball::blobOk(Blob b) {
   if (b.getLeftTopX() > BAD_VALUE && b.getLeftBottomX() > BAD_VALUE &&
-      b.width() > 2)
+      b.width() > 2) {
     return true;
+  }
   return false;
 }
 
