@@ -36,7 +36,6 @@ Blobs::Blobs(int howMany) {
 	init();
 }
 
-
 void Blobs::init() {
 	for (int i = 0; i < total; i++) {
 		blobs[i].init();

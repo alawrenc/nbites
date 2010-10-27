@@ -35,7 +35,9 @@ WBImageTranscriber::WBImageTranscriber(shared_ptr<Sensors> s)
 }
 
 
-WBImageTranscriber::~WBImageTranscriber(){}
+WBImageTranscriber::~WBImageTranscriber(){
+    delete [] image;
+}
 
 
 void WBImageTranscriber::releaseImage(){}

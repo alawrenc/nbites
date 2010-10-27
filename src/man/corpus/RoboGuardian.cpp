@@ -427,8 +427,8 @@ const string RoboGuardian::discoverIP() const{
     FILE * ipf = fopen("/tmp/ip.txt","r");
     if(ipf != NULL){
         fscanf(ipf,"%s\n",ip);
-        return ip;
         fclose(ipf);
+        return ip;
     }else{
         cout << "Unable to read IP from this platform"<<endl;
         return "0";

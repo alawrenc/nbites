@@ -13,7 +13,9 @@ static const int BADONE = -10000;
 class Blobs {
 public:
     Blobs(int howMany);
-    virtual ~Blobs() {}
+    virtual ~Blobs() {
+        delete [] blobs;
+    }
 
 	void init();
 	void init(int which) {blobs[which].init();}

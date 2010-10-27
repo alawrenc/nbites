@@ -61,7 +61,9 @@ public:
         command = new HeadJointCommand(time, jointsVector, head_stiffness,
                       static_cast<InterpolationType>(interpolationType));
     }
-
+    ~PyHeadJointCommand() {
+        delete command;
+    }
     HeadJointCommand* getCommand() const { return command; }
 
 private:
@@ -152,6 +154,10 @@ public:
                                   theta_degs*TO_RAD);
     }
 
+    ~PyWalkCommand() {
+        delete command;
+    }
+
     WalkCommand* getCommand() const { return command; }
 
 private:
@@ -230,6 +236,10 @@ public:
 									   static_cast<InterpolationType>(interpolationType));
 	}
 
+    ~PyBodyJointCommand() {
+        delete command;
+    }
+
 
     BodyJointCommand* getCommand() const { return command; }
 
@@ -270,6 +280,12 @@ public:
     }
 
     CoordHeadCommand* getCommand() const { return command; }
+
+    ~PyCoordHeadCommand() {
+        delete command;
+    }
+
+
 private:
     CoordHeadCommand *command;
 };
