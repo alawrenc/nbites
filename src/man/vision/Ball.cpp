@@ -1282,9 +1282,9 @@ bool Ball::ballNotSquareSC(int w, int h) {
       float ratio = (float)w / (float) h;
       cout << "Screening for ratios " << ratio << endl;
     }
-    return false;
+    return true;
   }
-  return true;
+  return false;
 }
 
 bool Ball::ballNotRoundSC() {
@@ -1293,9 +1293,9 @@ bool Ball::ballNotRoundSC() {
     if (BALLDEBUG) {
       cout << "Screening for roundness " << endl;
     }
-    return false;
+    return true;
   }
-  return true;
+  return false;
 }
 
 bool Ball::ballBadSurroundSC() {
@@ -1305,9 +1305,9 @@ bool Ball::ballBadSurroundSC() {
       drawBlob(*topBlob, BLACK);
       cout << "Screening for lack of green and bad surround" << endl;
     }
-    return false;
+    return true;
   }
-  return true;
+  return false;
 }
 
 bool Ball::ballDistMismatchSC(estimate e, VisualBall * thisBall) {
@@ -1326,9 +1326,9 @@ bool Ball::ballDistMismatchSC(estimate e, VisualBall * thisBall) {
       cout << "Screening due to distance mismatch " << e.dist <<
         " " << thisBall->getDistance() << endl;
     }
-    return false;
+    return true;
   }
-  return true;
+  return false;
 }
 
 bool Ball::ballSmallNearHorizonSC(int w, int h) {
@@ -1344,8 +1344,8 @@ bool Ball::ballSmallNearHorizonSC(int w, int h) {
       if (BALLDEBUG) {
         cout << "Screening small ball for horizon" << endl;
       }
-      return false;
+      return true;
     }
   }
-  return true;
+  return false;
 }
