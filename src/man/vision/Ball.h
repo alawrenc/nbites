@@ -89,6 +89,12 @@ public:
     // sanity checks
     void preScreenBlobsBasedOnSizeAndColor();
     bool sanityChecks(int w, int h, estimate e, VisualBall * thisBall);
+    bool badRatioSC(int w, int h);
+    bool badRoundnessSC();
+    bool badSurroundSC();
+    bool distanceMismatchSC(VisualBall * thisBall, estimate e);
+    bool badSmallBallSC(int w, int h);
+
     bool blobOk(Blob b);
     bool blobIsBigEnoughToBeABall(int w, int h);
 
